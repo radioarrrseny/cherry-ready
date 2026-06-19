@@ -204,40 +204,32 @@ export default function CrashPage() {
           </defs>
           <path d={pathD} stroke="url(#cv)" strokeWidth="0.8" fill="none" style={{ filter: `drop-shadow(0 0 4px ${crashed ? "hsla(0,90%,55%,0.7)" : "hsla(140,90%,50%,0.7)"})` }} />
         </svg>
-        {/* center display */}
+        {/* center display — always shows live mult, cashout shown as overlay card */}
         <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none px-3">
           {phase === PHASE_WAIT ? (
             <div className="font-display text-7xl text-yellow-300" style={{ textShadow: "0 0 30px hsla(45,95%,60%,0.8)" }} data-testid="crash-countdown">{countdown > 0 ? countdown : "GO"}</div>
-          ) : cashoutResult ? (
-            // Player already cashed out — main result is the cashout (never overwritten by crash)
-            <>
-              <div
-                className="font-display text-5xl tracking-tight"
-                style={{ color: "hsl(140 90% 65%)", textShadow: "0 0 30px hsla(140,90%,55%,0.8)" }}
-                data-testid="crash-mult"
-              >
-                {cashoutResult.mult.toFixed(2)}x
-              </div>
-              <div className="mt-2 text-base text-green-300 font-bold text-center" data-testid="cashout-msg">
-                {t("cashedOutMsg")} {cashoutResult.win}⭐ {t("at")} {cashoutResult.mult.toFixed(2)}x
-              </div>
-              {crashed && Number.isFinite(crashAt) && crashAt > 0 && (
-                <div className="mt-1 text-[11px] uppercase tracking-widest text-white/55" data-testid="crash-secondary">
-                  {t("roundCrashedAt")} {crashAt.toFixed(2)}x
-                </div>
-              )}
-            </>
           ) : (
             <>
-              <div className="font-display text-6xl tracking-tight"
-                style={{ color: crashed ? "hsl(0 90% 65%)" : "hsl(140 90% 65%)",
-                  textShadow: crashed ? "0 0 30px hsla(0,90%,55%,0.9)" : "0 0 30px hsla(140,90%,55%,0.7)" }}
-                data-testid="crash-mult">{mult.toFixed(2)}x</div>
+              <div
+                className="font-display text-6xl tracking-tight"
+                style={{
+                  color: crashed ? "hsl(0 90% 65%)" : "hsl(140 90% 65%)",
+                  textShadow: crashed ? "0 0 30px hsla(0,90%,55%,0.9)" : "0 0 30px hsla(140,90%,55%,0.7)",
+                }}
+                data-testid="crash-mult"
+              >
+                {mult.toFixed(2)}x
+              </div>
               {crashed && Number.isFinite(crashAt) && crashAt > 0 && (
-                <div className="mt-2 font-display text-xl text-red-400 tracking-widest text-center" data-testid="crash-label">
+                <div
+                  className={`mt-2 font-display tracking-widest text-center ${
+                    cashoutResult ? "text-sm text-white/60" : "text-xl text-red-400"
+                  }`}
+                  data-testid="crash-secondary"
+                >
                   {t("roundCrashedAt")} {crashAt.toFixed(2)}x
-                  {lostThisRound && (
-                    <div className="mt-1 text-xs font-normal opacity-90">
+                  {lostThisRound && !cashoutResult && (
+                    <div className="mt-1 text-xs font-normal opacity-90" data-testid="you-lost">
                       {t("youLost")} {bet}⭐
                     </div>
                   )}
@@ -246,6 +238,16 @@ export default function CrashPage() {
             </>
           )}
         </div>
+
+        {/* Cashout success card — pinned to corner so it never replaces the live mult */}
+        {cashoutResult && (
+          <div
+            className="absolute top-2 left-2 z-10 rounded-2xl px-3 py-2 bg-green-500/15 border border-green-400/40 backdrop-blur-md text-green-200 text-xs font-bold shadow-[0_0_20px_hsla(140,90%,55%,0.25)] pointer-events-none"
+            data-testid="cashout-msg"
+          >
+            {t("cashedOutMsg")} {cashoutResult.win}⭐ {t("at")} {cashoutResult.mult.toFixed(2)}x
+          </div>
+        )}
         <div className="absolute top-2 right-2 flex gap-1">
           {history.map((h, i) => (
             <span key={i} className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${h.at < 2 ? "bg-red-500/20 text-red-300" : "bg-green-500/20 text-green-300"}`}>{h.at}x</span>

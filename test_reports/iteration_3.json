@@ -1,0 +1,36 @@
+{
+  "summary": "Iteration 3 testing of two targeted Cherry Case fixes: (A) Crash cashout UI no longer freezes main multiplier; (B) TopUp split into chooser → stars / admin. Backend regression: 3/3 pytest in /app/backend/tests/test_iter2.py (crash idempotent cashout + spend-bonus-on-real, full iter2 suite previously 25/25). Frontend (Playwright): TopBar has NO promo-input; topup-modal chooser shows 'Пополнение баланса' + both topup-choice-stars and topup-choice-admin; admin stage shows 'Админ-пополнение' + 4-paragraph body with @RadioArseny + contact href=https://t.me/RadioArseny + admin-close works + NO promo-input in admin stage; stars stage shows 'Пополнить звёздами' + preset-50/amount-input/confirm-btn + promo-input/promo-apply-btn; 'badcode' → 'Promo code not found' sonner toast; '/admin' promo opens admin-modal; wrong admin secret → 'Invalid admin secret' toast. Crash cashout: cashout-msg overlay (top-left, green) shows 'Вы забрали 53⭐ на 1.06x'; main crash-mult continued animating after cashout (1.06 → 1.09 → 1.15); after crash, crash-secondary shows 'Раунд упал на 3.14x' AND cashout-msg STILL present unchanged ('Вы забрали 53⭐ на 1.06x'); no 'Краш на 0' / 'undefined' / 'NaN' anywhere. Crash loss path: secondary 'Раунд упал на 2.90x' appears correctly BUT [data-testid=you-lost] is MISSING. Mines warnings: 5x5/3 → mines-warning-low with 'Низкий риск — маленький множитель'; 5x5/20 → mines-warning-high with 'Высокий риск'. NOTE: 'Made with Emergent' floating badge overlaps promo-apply-btn on mobile (390px) viewport, blocking clicks; using Enter key works.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "Crash.jsx", "issue": "[data-testid=you-lost] element does NOT appear in the loss path even though bet was placed and user didn't cash out (balance decreased confirming bet was placed). Secondary text 'Раунд упал на X.XXx' renders but child 'you-lost' div is missing.", "selector": "[data-testid=you-lost]", "priority": "HIGH"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Mobile (390px) Top-Up Stars stage", "issues": ["'Made with Emergent' floating badge (bottom-right) overlaps the promo-apply-btn → click is intercepted on mobile viewport. Works on desktop (1280px). Mitigation: applyPromo also runs on Enter key."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter2.py",
+    "/app/test_reports/pytest/iter3.xml"
+  ],
+  "action_items": [
+    "Fix Crash.jsx you-lost rendering: the rAF `loop` closure inside `startRound` captures a stale `betPlaced` value (false at the moment startRound was scheduled via setInterval). When the crash happens, `if (betPlaced && !cashedOutRef.current) setLostThisRound(true)` evaluates `betPlaced` as the stale closure value → `lostThisRound` never flips → the you-lost div never renders. RCA: useEffect on PHASE_WAIT creates setInterval whose callback references startRound from that render; startRound's inner `loop` captures `betPlaced` from that same render. After user clicks bet, the new betPlaced=true state is NOT reflected in the already-scheduled loop. Fix: mirror the pattern used for cashedOutRef — add `betPlacedRef = useRef(false)`, set it true inside placeBet/confirmBonusBet success path and false on reset, then read `betPlacedRef.current` inside the loop instead of the captured state."
+  ],
+  "critical_code_review_comments": [
+    "Crash.jsx loop closure captures stale `betPlaced` state — root cause of missing you-lost element. Use a ref like cashedOutRef.",
+    "TopUpModal Stars stage: the promo-apply-btn is partially obscured on mobile by the 'Made with Emergent' floating badge. Consider repositioning the promo row above the confirm button, or accept Enter as the primary submission.",
+    "Crash.jsx: cashout success path explicitly handles server's `lost:true` rollback (good); however on transient network error the optimistic cashout-msg remains visible without a real credit — could mislead users. Consider a short 'pending' state until server confirms."
+  ],
+  "updated_files": [],
+  "success_rate": {
+    "backend": "3/3 (100% of new regression spot-checks); full iter2 suite 25/25 from previous iteration unaffected",
+    "frontend": "10/11 (you-lost element missing in Crash loss path)"
+  },
+  "test_credentials": "ADMIN_SECRET=9hNiTxKMM9Qb9YB9zJgqPhuVpS3MUrlkY4LtV3wVU-k (backend/.env). Test users via POST /api/auth/telegram fallback.",
+  "seed_data_creation": "Fresh TEST_<uuid12> users created during backend regression spot-checks; demo crash rounds played for frontend cashout UI verification (no real funds touched).",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "PRIMARY OUTSTANDING BUG: Crash.jsx loss-path you-lost element missing due to stale closure on `betPlaced` inside the rAF loop in startRound. Fix recommendation provided. All other crash cashout UI requirements (animation continues, cashout-msg overlay, secondary 'Раунд упал на', no 'Краш на 0'/undefined/NaN, cashout-msg persists after crash) are verified WORKING. TopUp 3-stage flow fully working. To test crash on mobile/with promo button, use Enter key — the Emergent badge intercepts clicks on apply-btn at 390px. Demo balance ≥1M is auto-seeded for new users so no top-up needed for /crash testing.",
+  "rca of the issue": "you-lost missing — useEffect([phase]) installs setInterval whose callback closes over `startRound`; `startRound` body defines `loop` which closes over `betPlaced`. When phase enters PHASE_WAIT, betPlaced=false. User clicks placeBet which (after async confirmBonusBet) eventually calls setBetPlaced(true). Component re-renders; setInterval's callback still references the OLD startRound (with betPlaced=false closure). When countdown hits 0 the old startRound fires and its loop reads the stale betPlaced=false. Result: setLostThisRound(true) is gated by a false condition and never executes. Reproduction: visit /crash in demo, click '[data-testid=crash-bet-btn]' during WAIT, wait for crash WITHOUT cashing out, observe '[data-testid=crash-secondary]' present but '[data-testid=you-lost]' absent. Fix: introduce betPlacedRef like cashedOutRef and read .current inside the loop."
+}
