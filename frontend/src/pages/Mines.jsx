@@ -1,7 +1,7 @@
-import React, { useState } from "react";
+import React, { useState, useMemo } from "react";
 import api from "@/lib/api";
 import { useApp } from "@/context/AppContext";
-import { Bomb, Gem, Star } from "lucide-react";
+import { Bomb, Gem, Star, AlertTriangle, ShieldAlert } from "lucide-react";
 import { toast } from "sonner";
 
 const RULES = {
@@ -10,8 +10,23 @@ const RULES = {
   7: { min: 1, max: 48 },
 };
 
+// Returns "low" | "high" | null for the current mines selection.
+function riskBucket(size, mines) {
+  if (size === 3) {
+    if (mines <= 1) return "low";
+    if (mines >= 6) return "high";
+  } else if (size === 5) {
+    if (mines <= 3) return "low";
+    if (mines >= 16) return "high";
+  } else if (size === 7) {
+    if (mines <= 5) return "low";
+    if (mines >= 32) return "high";
+  }
+  return null;
+}
+
 export default function MinesPage() {
-  const { t, mode, balance, setUser } = useApp();
+  const { t, mode, balance, setUser, confirmBonusBet } = useApp();
   const [size, setSize] = useState(5);
   const [mines, setMines] = useState(3);
   const [bet, setBet] = useState(50);
@@ -21,20 +36,24 @@ export default function MinesPage() {
   const [bombs, setBombs] = useState(null);
   const [busy, setBusy] = useState(false);
 
-  const start = async () => {
+  const risk = useMemo(() => riskBucket(size, Math.min(Math.max(mines, RULES[size].min), RULES[size].max)), [size, mines]);
+
+  const start = () => {
     if (bet <= 0 || bet > balance) { toast.error(t("insufficientBalance")); return; }
     const { min, max } = RULES[size];
     const m = Math.min(Math.max(mines, min), max);
-    setBusy(true);
-    try {
-      const r = await api.post("/games/mines/start", { bet, size, mines: m, mode });
-      setGameId(r.data.game_id);
-      setRevealed({});
-      setMult(1.0);
-      setBombs(null);
-      if (r.data.user) setUser(r.data.user);
-    } catch (e) { toast.error(e?.response?.data?.detail || t("failed")); }
-    finally { setBusy(false); }
+    confirmBonusBet(bet, async () => {
+      setBusy(true);
+      try {
+        const r = await api.post("/games/mines/start", { bet, size, mines: m, mode });
+        setGameId(r.data.game_id);
+        setRevealed({});
+        setMult(1.0);
+        setBombs(null);
+        if (r.data.user) setUser(r.data.user);
+      } catch (e) { toast.error(e?.response?.data?.detail || t("failed")); }
+      finally { setBusy(false); }
+    });
   };
 
   const reveal = async (i) => {
@@ -72,8 +91,7 @@ export default function MinesPage() {
   };
 
   const total = size * size;
-  // Mobile-friendly responsive cells; 7x7 needs smaller cells
-  const cellSize = size === 3 ? "aspect-square" : size === 5 ? "aspect-square" : "aspect-square";
+  const cellSize = "aspect-square";
   const cellTextSize = size === 7 ? "text-xs" : "text-lg";
   const iconSize = size === 7 ? "w-4 h-4" : "w-6 h-6";
   const gapCls = size === 7 ? "gap-1" : "gap-2";
@@ -148,6 +166,37 @@ export default function MinesPage() {
           />
           <div className="text-center font-bold text-pink-300" data-testid="mines-count-value">{Math.min(Math.max(mines, RULES[size].min), RULES[size].max)}</div>
         </div>
+
+        {risk === "low" && (
+          <div
+            className="rounded-2xl p-3 border border-yellow-400/30 bg-yellow-500/10 text-yellow-100"
+            data-testid="mines-warning-low"
+          >
+            <div className="flex items-center gap-2 mb-1 font-bold text-sm">
+              <AlertTriangle className="w-4 h-4 text-yellow-300" />
+              {t("minesLowRiskTitle")}
+            </div>
+            <div className="text-xs leading-relaxed opacity-90">
+              {t("minesLowRiskBody")}
+            </div>
+          </div>
+        )}
+
+        {risk === "high" && (
+          <div
+            className="rounded-2xl p-3 border border-red-500/40 bg-red-500/10 text-red-100"
+            data-testid="mines-warning-high"
+          >
+            <div className="flex items-center gap-2 mb-1 font-bold text-sm">
+              <ShieldAlert className="w-4 h-4 text-red-300" />
+              {t("minesHighRiskTitle")}
+            </div>
+            <div className="text-xs leading-relaxed opacity-90">
+              {t("minesHighRiskBody")}
+            </div>
+          </div>
+        )}
+
         <div className="flex items-center gap-2">
           <input
             type="number" min={1} value={bet}

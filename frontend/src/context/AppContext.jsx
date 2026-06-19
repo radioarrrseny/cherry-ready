@@ -9,6 +9,8 @@ export function AppProvider({ children }) {
   const [mode, setMode] = useState(() => localStorage.getItem("cc_mode") || "demo");
   const [lang, setLang] = useState(() => localStorage.getItem("cc_lang") || "ru");
   const [loading, setLoading] = useState(true);
+  // Global bonus-stars confirmation modal state
+  const [bonusPrompt, setBonusPrompt] = useState(null); // { onConfirm, onCancel } | null
 
   const t = useCallback((key) => translations[lang][key] || key, [lang]);
 
@@ -65,9 +67,28 @@ export function AppProvider({ children }) {
   }, []);
 
   const balance = user ? (mode === "demo" ? user.demo_balance : user.balance) : 0;
+  const depositedBalance = user ? Math.max(0, user.deposited_balance || 0) : 0;
+  const bonusBalance = user ? Math.max(0, (user.balance || 0) - depositedBalance) : 0;
+
+  // Wrap a "place bet" action with bonus-stars confirmation when applicable.
+  // - demo mode → always proceed
+  // - real mode + bet <= deposited → proceed
+  // - real mode + bet > deposited → open modal, run `proceed` on confirm
+  const confirmBonusBet = useCallback((betAmount, proceed) => {
+    if (mode !== "real") return proceed();
+    if (betAmount <= depositedBalance) return proceed();
+    setBonusPrompt({
+      onConfirm: () => { setBonusPrompt(null); proceed(); },
+      onCancel: () => setBonusPrompt(null),
+    });
+  }, [mode, depositedBalance]);
 
   return (
-    <AppCtx.Provider value={{ user, setUser, mode, setMode, lang, setLang, t, loading, refreshUser, balance }}>
+    <AppCtx.Provider value={{
+      user, setUser, mode, setMode, lang, setLang, t, loading, refreshUser,
+      balance, depositedBalance, bonusBalance,
+      confirmBonusBet, bonusPrompt,
+    }}>
       {children}
     </AppCtx.Provider>
   );

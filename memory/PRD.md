@@ -1,55 +1,62 @@
 # Cherry Case — PRD
 
 ## Original Problem Statement
-Continue fixing the Cherry Case project. Apply 10 specific fixes (Crash distribution, Slots RTP, Mines 3/5/7, remove admin hint, Promo code field, hidden /admin modal, admin add-stars endpoint, RU translations, preserve existing features).
+Continue fixing the Cherry Case project. Multiple fix rounds applied (crash distribution, slots RTP, mines reworked, admin panel, promo code, hidden admin, RU translations, withdrawal email notifications, deposited/bonus stars separation, risk warnings, top-up info copy).
 
 ADMIN_SECRET=9hNiTxKMM9Qb9YB9zJgqPhuVpS3MUrlkY4LtV3wVU-k
 
 ## Architecture
-- Backend: FastAPI on :8001, prefix `/api`, MongoDB at `localhost:27017` (db `test_database`).
+- Backend: FastAPI on :8001 with `/api` prefix, MongoDB at `localhost:27017` (db `test_database`).
 - Frontend: React (CRA + craco), served on :3000, uses `REACT_APP_BACKEND_URL`.
 - Auth: Telegram WebApp / fallback dev user via `/api/auth/telegram`.
-- Admin auth: ADMIN_SECRET in backend `.env`, verified via `/api/admin/login`, `/api/admin/verify`, header `X-ADMIN`.
+- Admin auth: ADMIN_SECRET via `/api/admin/login` and `/api/admin/verify`, header `X-ADMIN`.
+- Email: Resend (graceful skip when `RESEND_API_KEY` missing).
 
-## Core Requirements (Static)
-- Casino-style mini-app: Cases, Crash, Mines, Slots, Wheel, Inventory, Withdrawals, Live drops, Profile.
-- Demo mode (1,000,000 ⭐) and Real mode (Telegram Stars top-ups).
-- Provably fair distributions per spec.
-- Admin dashboard for withdrawal moderation + user inspection + add-stars.
-- Russian + English UI.
+## Implemented (latest snapshot)
 
-## What's Been Implemented (2026-06-19)
+### Crash
+- `generate_crash_multiplier(last)` with per-user no-repeat (uses last user crash_at).
+- Cashout is atomic and idempotent: optimistic local credit + server confirmation. Second call returns `already_cashed:true`.
+- Frontend never shows "Crash at 0/undefined/NaN". When user cashed out, the cashout message is the main result; round crash result is shown as secondary text. When user did not cash out, "Round crashed at X" + "You lost X⭐".
 
-### Session 1 — 2026-06-19 — 10 Fixes Applied
-1. **Crash distribution** rewritten to continuous-range sampler matching spec (20/25/25/18/8/3.9/0.1%). Never returns 0. **Per-user** no-immediate-repeat guarantee via last `crash_at` lookup.
-2. **Crash cashout** made idempotent — second call returns `already_cashed:true`, no double payout.
-3. **Slots RTP** updated to Lose=65%, 0.5x=14%, 1x=10%, 2x=7%, 5x=3%, 20x=0.9999%, 100x=0.0001%.
-4. **Mines** reworked: sizes 3/5/7 only; mine ranges 1–8/1–24/1–48; RTP raised to 0.82.
-5. **Admin hint removed** from Profile page.
-6. **Promo Code input** added to TopBar (English UI).
-7. **Hidden /admin modal**: entering `/admin` in promo opens Admin Access modal; secret validated via `POST /api/admin/verify`.
-8. **Admin add-stars**: `POST /api/admin/users/{tg_id}/add-stars` (validates X-ADMIN, rejects ≤0, 404 if user missing, logs to `admin_actions`); frontend form on Admin page with optional user browser.
-9. **Russian translations expanded** + hardcoded English removed from Games / Crash / Inventory / Admin.
-10. **Preserved**: cases, inventory, withdrawals, demo mode, live drops, Telegram bot config, admin secret.
+### Mines
+- Sizes 3/5/7 only (3x3:1-8, 5x5:1-24, 7x7:1-48). RTP 0.82.
+- `mines_multiplier = max(0.82/survival, 1.0 + picks*0.02)` — slow growth on low-mine boards (5x5/1mine: 1.02, 1.04, 1.06 per safe tile).
+- Low-risk warning (3x3/1, 5x5/1-3, 7x7/1-5) and high-risk warning (3x3/6-8, 5x5/16-24, 7x7/32-48) shown near selector.
 
-### Verified
-- Backend pytest: 23/24 (95.8%); minor was global-cross-client repeat, fixed by per-user no-repeat.
-- Frontend Playwright: 100% (promo input, admin modal, admin page, mines 3/5/7, profile clean, RU translations).
-- Sanity check: 200 sequential per-user crash starts → 0 consecutive repeats.
+### Slots
+- RTP per spec (Lose 65 / 0.5x 14 / 1x 10 / 2x 7 / 5x 3 / 20x 0.9999 / 100x 0.0001).
 
-## Prioritized Backlog
+### Deposited vs Bonus Stars
+- `user.deposited_balance` tracks Telegram-Stars-paid amount only (incremented in payment webhook).
+- Real-mode bet/case-open spending uses helper `spend_balance` → deposited first, then bonus.
+- `balance` is the total (deposited + bonus); `bonus_balance` derived in admin endpoints.
+- Frontend modal warning ("You are playing with bonus Stars") in real mode when bet > deposited (Crash/Mines/Slots/Wheel via `confirmBonusBet`).
 
-### P1
-- Real promo code system (admin can create codes that grant stars / bonus).
-- Per-user crash history view in Profile (last 20 rounds with multiplier + outcome).
+### Top-Up
+- Modal text replaced with the contact-admin instruction copy (RU + EN), plus "Message @RadioArseny" CTA opening t.me/RadioArseny.
+- Promo Code field lives inside the Top-Up modal (English UI). `/admin` opens hidden Admin Access modal.
 
-### P2
-- Refactor `server.py` (1141 lines) into routers (`admin`, `games`, `cases`).
-- Server-Sent Events for live drops instead of polling.
-- Add /api/profile alias for legacy tests, or remove legacy test file.
+### Withdrawal Emails (Resend)
+- Real-mode withdrawal creation triggers a one-time email to `arseny.yurevi4@gmail.com`.
+- Subject: `Cherry Case Withdrawal Request`. Body includes Telegram username/ID (or "Not available yet"), gift name/value/image, source case, total deposits, current balance, inventory value, short Request ID (`WD-XXXXXX`), created-at human time, full verification block, and warning if suspicious.
+- Skips silently if `RESEND_API_KEY` not configured.
+- No emails for demo mode, duplicates, or status changes.
 
-### P0 Remaining
-- None. All requested fixes are live.
+### Admin
+- `POST /api/admin/users/{tg_id}/add-stars` — Stars added to `balance` only (bonus), validates X-ADMIN, rejects ≤0/missing user, logs to `admin_actions`.
+- `GET /api/admin/users` returns each user's `deposited_balance` and `bonus_balance`.
+- `GET /api/admin/player/{tg_id}` returns the same + per-record withdrawal verification.
+- Admin UI: users list shows (D/B), player drawer shows Total/Deposited/Bonus, withdrawal cards show source case and "REVIEW" flag for suspicious.
 
-## Enhancement Idea (engagement)
-Add a small "Daily Login Streak" indicator next to the balance — gives 50/100/200/500 ⭐ on consecutive days. Drives retention with near-zero implementation cost (re-use existing `daily_cooldown`).
+## Files Of Interest
+- Backend: `/app/backend/server.py`
+- Frontend pages: `/app/frontend/src/pages/{Crash,Mines,Slots,Wheel,Profile,Admin,Inventory,Games}.jsx`
+- Components: `/app/frontend/src/components/{TopBar,TopUpModal,BonusBetModal}.jsx`
+- Context: `/app/frontend/src/context/AppContext.jsx`
+- Translations: `/app/frontend/src/data/translations.js`
+
+## Backlog
+- Real promo code redemption endpoint.
+- "Deposited balance" badge on TopBar for transparency.
+- Server-side ratelimit on `/api/admin/verify` against brute force.

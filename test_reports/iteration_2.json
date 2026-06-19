@@ -1,0 +1,37 @@
+{
+  "summary": "Iteration 2 testing of Cherry Case final polish (8 fix areas). Backend: 25/25 pytest in /app/backend/tests/test_iter2.py — covers new user shape (balance/deposited/demo), admin add-stars credits BONUS only (deposited stays 0), crash real-mode spends bonus when no deposit, idempotent cashout (already_cashed flag, no double-pay, includes user), no consecutive crash repeats over 100 sequential calls, mines floor=1+picks*0.02 verified at 5x5 and 7x7 for picks 1/2/3, mines high-risk RTP still strong (5x5/24→~20.5x, 7x7/48→~40.18x), mines size 4 rejected & 3/5/7 accepted, /admin/users and /admin/player return bonus_balance, real-mode withdrawal creates verification block + short_id WD-XXXXXX + source_case_name + suspicious=true (no paid invoices) + email gracefully skipped (RESEND_API_KEY missing, no exception, email_sent absent), demo withdraw rejected, /api/cases and /api/live-drops preserved. Frontend: 13/13 Playwright — TopBar has NO promo-input; Mines warnings work for 5/3 LOW, 5/20 HIGH, 3/1 LOW, 3/7 HIGH, 7/5 LOW, 7/40 HIGH with correct RU text ('Низкий риск — маленький множитель' / 'Высокий риск'); low text does NOT contain 'высокий риск'; Top-Up modal title 'Пополнение баланса', contact-admin-link → https://t.me/RadioArseny, contact-admin-btn present, promo-input + promo-apply-btn inside modal, invalidcode → 'Promo code not found' toast, /admin promo opens admin-modal, wrong secret rejected, correct secret navigates to /admin. Admin page renders, shows 'dep: 0' and source case 'Basic Case' for withdrawal request.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter2.py",
+    "/app/test_reports/pytest/iter2.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is now ~1340 lines — recommend extracting admin / games / cases routers into separate modules for maintainability.",
+    "generate_crash_multiplier still uses a module-global _last_crash_multiplier for the no-repeat guarantee. Per-user no-repeat is correctly enforced by passing the user's previous crash_at from DB in /games/crash/start, which is good. The module-global is now effectively unused as a correctness mechanism and could be removed to avoid confusion.",
+    "_send_withdrawal_email runs as asyncio.create_task without awaiting — exceptions are swallowed inside the function but unhandled cancellation on shutdown is possible. Consider a background queue or store-then-poll pattern for production reliability.",
+    "withdraw_item: short_id collision possible (uuid hex[:6] uppercase = 16M combos). For low volume it is fine; add uniqueness index or retry-on-collide if scale grows.",
+    "spend_balance does NOT validate amount<=user.balance before $inc; relies on caller. Crash/Mines/Slots/Wheel/case-open all pre-check, which is correct, but a regression in any caller could push balance negative."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter2.py (new)"
+  ],
+  "success_rate": {
+    "backend": "25/25 (100%)",
+    "frontend": "13/13 (100%)"
+  },
+  "test_credentials": "ADMIN_SECRET=9hNiTxKMM9Qb9YB9zJgqPhuVpS3MUrlkY4LtV3wVU-k (backend/.env). Test users via POST /api/auth/telegram {fallback_user_id, fallback_username}.",
+  "seed_data_creation": "Multiple TEST_<uuid12> users created via /api/auth/telegram fallback. Each gets balance=0, deposited_balance=0, demo_balance=1,000,000. Admin add-stars used to grant bonus stars during tests. One real-mode Basic Case opening created during withdrawal verification test (Teddy Bear, value 15).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "All 8 fix areas verified end-to-end. Backend public URL: REACT_APP_BACKEND_URL=https://game-patch-v2.preview.emergentagent.com (set in shell when running pytest, since it's only in frontend/.env). /api/me (not /api/profile). MinesRevealReq uses 'index' (not 'cell') — legacy test_cherry_case.py uses wrong field. RESEND_API_KEY intentionally missing — withdrawal API returns 200 and silently logs warning. spend_balance backfills deposited_balance via get_user. crash_cashout already_cashed:true on second call now returns full user object. Frontend slider values must be set via the native HTMLInputElement.value setter (React controlled inputs ignore plain value assignment).",
+  "rca of the issue": "No outstanding bugs from this iteration. Previous iteration's note about cross-stream crash repeats is now mitigated server-side: crash_start fetches the user's own previous crash_at from db.crash_games and passes it to generate_crash_multiplier(prev_val), making the no-repeat guarantee per-user instead of process-global. Verified with 100 sequential calls → 0 consecutive repeats."
+}

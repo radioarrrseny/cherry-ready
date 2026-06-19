@@ -102,6 +102,19 @@ export const translations = {
     wdSent: "Подарок отправлен",
     wdRejected: "Отклонено",
     withdrawCreated: "Заявка на вывод создана. Подарок придёт к вам в течение 24 часов после проверки.",
+    // Crash detail
+    roundCrashedAt: "Раунд упал на",
+    youLost: "Вы проиграли",
+    // Mines risk warnings
+    minesLowRiskTitle: "Низкий риск — маленький множитель",
+    minesLowRiskBody: "Вы выбрали очень мало мин. Шанс проиграть ниже, но множитель будет очень маленьким. Чтобы получить нормальный выигрыш, нужно открыть много клеток или выбрать больше мин.",
+    minesHighRiskTitle: "Высокий риск",
+    minesHighRiskBody: "Вы выбрали много мин. Множитель будет выше, но шанс проиграть намного больше.",
+    // Bonus stars bet warning
+    bonusBetTitle: "Вы играете бонусными звёздами",
+    bonusBetBody: "Эти звёзды получены из кейсов, подарков или бонусов, а не через пополнение. Вы можете играть ими, но вывод подарков проходит ручную проверку.",
+    continueBtn: "Продолжить",
+    cancelBtn: "Отмена",
   },
   en: {
     cases: "Cases",
@@ -204,5 +217,18 @@ export const translations = {
     wdSent: "Gift sent",
     wdRejected: "Rejected",
     withdrawCreated: "Withdrawal request created. Your gift will arrive within 24 hours after review.",
+    // Crash detail
+    roundCrashedAt: "Round crashed at",
+    youLost: "You lost",
+    // Mines risk warnings
+    minesLowRiskTitle: "Low risk — small multiplier",
+    minesLowRiskBody: "You selected very few mines. The chance to lose is lower, but the multiplier will be very small. To get a meaningful win, open many tiles or choose more mines.",
+    minesHighRiskTitle: "High risk",
+    minesHighRiskBody: "You selected many mines. The multiplier will be higher, but the chance to lose is much bigger.",
+    // Bonus stars bet warning
+    bonusBetTitle: "You are playing with bonus Stars",
+    bonusBetBody: "These Stars came from cases, gifts, or bonuses, not from a real top-up. You can play with them, but gift withdrawals are manually reviewed.",
+    continueBtn: "Continue",
+    cancelBtn: "Cancel",
   },
 };

@@ -146,7 +146,12 @@ export default function AdminPage() {
                 data-testid={`user-row-${u.tg_id}`}
               >
                 <span className="truncate">@{u.username || "—"} <span className="text-white/40">({u.tg_id})</span></span>
-                <span className="text-gold flex items-center gap-1 whitespace-nowrap"><Star className="w-3 h-3" fill="currentColor" />{u.balance ?? 0}</span>
+                <span className="text-gold flex items-center gap-1 whitespace-nowrap" title={`Deposited ${u.deposited_balance ?? 0} • Bonus ${u.bonus_balance ?? 0}`}>
+                  <Star className="w-3 h-3" fill="currentColor" />{u.balance ?? 0}
+                  <span className="text-[10px] text-white/50 ml-1">
+                    (D{u.deposited_balance ?? 0}/B{u.bonus_balance ?? 0})
+                  </span>
+                </span>
               </button>
             ))}
           </div>
@@ -173,6 +178,11 @@ export default function AdminPage() {
                 <span className="text-white/50">{new Date(w.created_at).toLocaleString()}</span>
                 {w.fraud_flags?.length > 0 && <span className="text-red-400 flex items-center gap-1"><AlertTriangle className="w-3 h-3" />{w.fraud_flags.length}</span>}
               </div>
+              <div className="flex items-center gap-2 text-[10px] mt-0.5 text-white/60">
+                {typeof w.total_deposits === "number" && <span>dep: <b className="text-green-300">{w.total_deposits}</b></span>}
+                {w.source_case_name && <span>case: <b className="text-pink-200">{w.source_case_name}</b></span>}
+                {w.suspicious && <span className="text-red-300 font-bold">⚠ REVIEW</span>}
+              </div>
             </div>
             <button onClick={() => openPlayer(w.tg_id)} className="btn-ghost !py-1 !px-2 text-xs">Player</button>
             {w.status === "pending" && (
@@ -194,8 +204,10 @@ export default function AdminPage() {
             <div className="font-display text-lg mb-2">Player @{player.user.username || "—"}</div>
             <div className="text-xs text-white/70 mb-2">ID {player.user.tg_id}</div>
             <div className="grid grid-cols-2 gap-2 text-xs mb-3">
-              <div>Real bal: <b>{player.user.balance}</b></div>
+              <div>Total balance: <b>{player.user.balance}</b></div>
               <div>Demo bal: <b>{player.user.demo_balance}</b></div>
+              <div>Deposited: <b className="text-green-300">{player.user.deposited_balance ?? 0}</b></div>
+              <div>Bonus: <b className="text-yellow-300">{player.user.bonus_balance ?? 0}</b></div>
               <div>Cases: <b>{player.case_opens.length}</b></div>
               <div>Invoices: <b>{player.invoices.length}</b></div>
               <div>Withdrawals: <b>{player.withdrawals.length}</b></div>

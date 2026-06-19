@@ -8,39 +8,41 @@ const SYMBOLS = ["⭐", "🍒", "💎", "🔔", "7️⃣", "❤️"];
 const SYMBOL_MAP = { star: "⭐", cherry: "🍒", diamond: "💎", bell: "🔔", seven: "7️⃣", heart: "❤️" };
 
 export default function SlotsPage() {
-  const { t, mode, balance, setUser } = useApp();
+  const { t, mode, balance, setUser, confirmBonusBet } = useApp();
   const [bet, setBet] = useState(25);
   const [reels, setReels] = useState(["🍒", "💎", "⭐"]);
   const [spinning, setSpinning] = useState(false);
   const [turbo, setTurbo] = useState(false);
   const [lastWin, setLastWin] = useState(0);
 
-  const spin = async () => {
+  const spin = () => {
     if (spinning) return;
     if (bet <= 0 || bet > balance) { toast.error(t("insufficientBalance")); return; }
-    setSpinning(true); setLastWin(0);
-    // animation phase: tick random symbols
-    const startT = Date.now();
-    const dur = turbo ? 700 : 1800;
-    const interval = setInterval(() => {
-      setReels([SYMBOLS[Math.floor(Math.random() * SYMBOLS.length)], SYMBOLS[Math.floor(Math.random() * SYMBOLS.length)], SYMBOLS[Math.floor(Math.random() * SYMBOLS.length)]]);
-      if (Date.now() - startT > dur - 100) clearInterval(interval);
-    }, 70);
-    try {
-      const r = await api.post("/games/slots/spin", { bet, mode });
-      await new Promise((res) => setTimeout(res, dur));
-      clearInterval(interval);
-      const mapped = r.data.reels.map((s) => SYMBOL_MAP[s] || "⭐");
-      setReels(mapped);
-      if (r.data.user) setUser(r.data.user);
-      setLastWin(r.data.win || 0);
-      if (r.data.win > 0) toast.success(`+${r.data.win} ⭐`);
-    } catch (e) {
-      clearInterval(interval);
-      toast.error(e?.response?.data?.detail || t("failed"));
-    } finally {
-      setSpinning(false);
-    }
+    confirmBonusBet(bet, async () => {
+      setSpinning(true); setLastWin(0);
+      // animation phase: tick random symbols
+      const startT = Date.now();
+      const dur = turbo ? 700 : 1800;
+      const interval = setInterval(() => {
+        setReels([SYMBOLS[Math.floor(Math.random() * SYMBOLS.length)], SYMBOLS[Math.floor(Math.random() * SYMBOLS.length)], SYMBOLS[Math.floor(Math.random() * SYMBOLS.length)]]);
+        if (Date.now() - startT > dur - 100) clearInterval(interval);
+      }, 70);
+      try {
+        const r = await api.post("/games/slots/spin", { bet, mode });
+        await new Promise((res) => setTimeout(res, dur));
+        clearInterval(interval);
+        const mapped = r.data.reels.map((s) => SYMBOL_MAP[s] || "⭐");
+        setReels(mapped);
+        if (r.data.user) setUser(r.data.user);
+        setLastWin(r.data.win || 0);
+        if (r.data.win > 0) toast.success(`+${r.data.win} ⭐`);
+      } catch (e) {
+        clearInterval(interval);
+        toast.error(e?.response?.data?.detail || t("failed"));
+      } finally {
+        setSpinning(false);
+      }
+    });
   };
 
   return (

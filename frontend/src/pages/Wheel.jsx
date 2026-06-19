@@ -7,7 +7,7 @@ import { toast } from "sonner";
 const COLORS = ["hsl(340 90% 55%)", "hsl(45 95% 55%)", "hsl(280 80% 60%)", "hsl(160 70% 50%)", "hsl(210 90% 60%)", "hsl(20 90% 55%)", "hsl(0 80% 50%)"];
 
 export default function WheelPage() {
-  const { t, mode, balance, setUser } = useApp();
+  const { t, mode, balance, setUser, confirmBonusBet } = useApp();
   const [segments, setSegments] = useState([]);
   const [bet, setBet] = useState(25);
   const [angle, setAngle] = useState(0);
@@ -19,32 +19,31 @@ export default function WheelPage() {
     (async () => { try { const r = await api.get("/games/wheel/segments"); setSegments(r.data.segments || []); } catch (e) {} })();
   }, []);
 
-  const spin = async () => {
+  const spin = () => {
     if (spinning || segments.length === 0) return;
     if (bet <= 0 || bet > balance) { toast.error(t("insufficientBalance")); return; }
-    setSpinning(true); setPopup(null);
-    try {
-      const r = await api.post("/games/wheel/spin", { bet, mode });
-      const idx = r.data.segment_index;
-      const segAngle = 360 / segments.length;
-      // Compute absolute desired stop angle so that final angle % 360 places idx under top pointer.
-      // We add at least (turbo?4:8) full revolutions on top of any current angle.
-      const minSpins = turbo ? 4 : 8;
-      const desiredOffset = (360 - (idx * segAngle + segAngle / 2) + 360) % 360;
-      const current = angle;
-      const currentMod = ((current % 360) + 360) % 360;
-      let delta = desiredOffset - currentMod;
-      if (delta < 0) delta += 360;
-      const newAngle = current + minSpins * 360 + delta;
-      setAngle(newAngle);
-      const dur = turbo ? 1400 : 4500;
-      setTimeout(() => {
-        if (r.data.user) setUser(r.data.user);
-        // Use SERVER label/mult — segment under pointer is idx, which holds the same label/mult as server returned.
-        setPopup({ label: r.data.label, mult: r.data.mult, win: r.data.win });
-        setSpinning(false);
-      }, dur);
-    } catch (e) { setSpinning(false); toast.error(e?.response?.data?.detail || t("failed")); }
+    confirmBonusBet(bet, async () => {
+      setSpinning(true); setPopup(null);
+      try {
+        const r = await api.post("/games/wheel/spin", { bet, mode });
+        const idx = r.data.segment_index;
+        const segAngle = 360 / segments.length;
+        const minSpins = turbo ? 4 : 8;
+        const desiredOffset = (360 - (idx * segAngle + segAngle / 2) + 360) % 360;
+        const current = angle;
+        const currentMod = ((current % 360) + 360) % 360;
+        let delta = desiredOffset - currentMod;
+        if (delta < 0) delta += 360;
+        const newAngle = current + minSpins * 360 + delta;
+        setAngle(newAngle);
+        const dur = turbo ? 1400 : 4500;
+        setTimeout(() => {
+          if (r.data.user) setUser(r.data.user);
+          setPopup({ label: r.data.label, mult: r.data.mult, win: r.data.win });
+          setSpinning(false);
+        }, dur);
+      } catch (e) { setSpinning(false); toast.error(e?.response?.data?.detail || t("failed")); }
+    });
   };
 
   const segAngle = segments.length ? 360 / segments.length : 0;

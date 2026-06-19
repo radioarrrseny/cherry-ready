@@ -8,7 +8,7 @@ const PHASE_WAIT = "wait", PHASE_FLY = "fly", PHASE_CRASH = "crash";
 const QUICK_BETS = [50, 100, 250, 500, 1000];
 
 export default function CrashPage() {
-  const { t, mode, balance, setUser } = useApp();
+  const { t, mode, balance, setUser, confirmBonusBet } = useApp();
   const [bet, setBet] = useState(50);
   const [phase, setPhase] = useState(PHASE_WAIT);
   const [countdown, setCountdown] = useState(3);
@@ -23,6 +23,9 @@ export default function CrashPage() {
   const startRef = useRef(null);
 
   const [cashoutResult, setCashoutResult] = useState(null);
+  const [lostThisRound, setLostThisRound] = useState(false);
+  // Atomic cashout flag (ref so we can read instantly inside the rAF loop and async cashout)
+  const cashedOutRef = useRef(false);
 
   useEffect(() => {
     if (phase === PHASE_FLY || phase === PHASE_CRASH) return;
@@ -55,6 +58,8 @@ export default function CrashPage() {
     let timer;
     if (phase === PHASE_WAIT) {
       setCountdown(3); setMult(1.0); setCrashAt(null); setGameId(null); setPathD("M 0 100"); setCashoutResult(null);
+      cashedOutRef.current = false;
+      setLostThisRound(false);
       let c = 3;
       timer = setInterval(() => {
         c -= 1; setCountdown(c);
@@ -69,14 +74,17 @@ export default function CrashPage() {
     let crashTarget = crashAt;
     if (!crashTarget) {
       // Visual-only fallback when no bet placed — mirrors backend distribution
-      const r = Math.random() * 100;
-      if (r < 20) crashTarget = +(1.01 + Math.random() * 0.19).toFixed(2);
-      else if (r < 45) crashTarget = +(1.21 + Math.random() * 0.29).toFixed(2);
-      else if (r < 70) crashTarget = +(1.51 + Math.random() * 0.49).toFixed(2);
-      else if (r < 88) crashTarget = +(2.01 + Math.random() * 0.99).toFixed(2);
-      else if (r < 96) crashTarget = +(3.01 + Math.random() * 1.99).toFixed(2);
-      else if (r < 99.9) crashTarget = +(5.01 + Math.random() * 4.99).toFixed(2);
-      else crashTarget = +(10.01 + Math.random() * 39.99).toFixed(2);
+      // Avoid generating same value as the last shown round.
+      const last = history[0]?.at;
+      let attempts = 0;
+      do {
+        crashTarget = sampleVisualCrash();
+        attempts += 1;
+      } while (crashTarget === last && attempts < 5);
+      // Nudge slightly if still same (extremely unlikely)
+      if (crashTarget === last) {
+        crashTarget = +Math.max(1.01, crashTarget + 0.01).toFixed(2);
+      }
       setCrashAt(crashTarget);
     }
     setPhase(PHASE_FLY);
@@ -90,7 +98,16 @@ export default function CrashPage() {
       setPathD(`M 0 100 Q ${xR * 50} ${100 - yR * 30} ${xR * 100} ${100 - yR * 100}`);
       if (m >= crashTarget) {
         setMult(crashTarget); setPhase(PHASE_CRASH);
-        setHistory((h) => [{ at: crashTarget }, ...h].slice(0, 6));
+        // Mark loss if a bet was placed and user never cashed out
+        if (betPlaced && !cashedOutRef.current) setLostThisRound(true);
+        setHistory((h) => {
+          // Defensive: never store back-to-back duplicates client-side
+          if (h.length > 0 && h[0].at === crashTarget) {
+            const adjusted = +Math.max(1.01, crashTarget + 0.01).toFixed(2);
+            return [{ at: adjusted }, ...h].slice(0, 6);
+          }
+          return [{ at: crashTarget }, ...h].slice(0, 6);
+        });
         setBetPlaced(false);
         setTimeout(() => setPhase(PHASE_WAIT), 2200);
         cancelAnimationFrame(rafRef.current); return;
@@ -103,30 +120,62 @@ export default function CrashPage() {
   const placeBet = async () => {
     if (phase !== PHASE_WAIT || betPlaced) return;
     if (!Number.isFinite(bet) || bet <= 0 || bet > balance) { toast.error(t("insufficientBalance")); return; }
-    try {
-      const r = await api.post("/games/crash/start", { bet, mode });
-      if (r.data.user) setUser(r.data.user);
-      setGameId(r.data.game_id); setCrashAt(r.data.crash_at); setBetPlaced(true);
-    } catch (e) { toast.error(e?.response?.data?.detail || t("failed")); }
+    confirmBonusBet(bet, async () => {
+      try {
+        const r = await api.post("/games/crash/start", { bet, mode });
+        if (r.data.user) setUser(r.data.user);
+        setGameId(r.data.game_id); setCrashAt(r.data.crash_at); setBetPlaced(true);
+      } catch (e) { toast.error(e?.response?.data?.detail || t("failed")); }
+    });
   };
 
   const cashout = async () => {
+    // Atomic guard — only allow ONCE per round, only while flying with active bet
+    if (cashedOutRef.current) return;
     if (phase !== PHASE_FLY || !betPlaced || !gameId) return;
     const mNow = mult;
+    const optimisticWin = Math.floor(bet * mNow);
+    // 1. Freeze: flip atomic flag, lock multiplier display
+    cashedOutRef.current = true;
     setBetPlaced(false);
+    // 2. Optimistically render the cashout message immediately — even if server is slow
+    setCashoutResult({ mult: mNow, win: optimisticWin });
     try {
       const r = await api.post("/games/crash/cashout", { game_id: gameId, multiplier: mNow });
-      if (r.data.user) setUser(r.data.user);
-      if (r.data.lost) {
-        // Already crashed before cashout request reached server
-        toast.error(`${t("crashed")} ${crashAt}x`);
+      // Use server response if it succeeded
+      if (r.data?.lost) {
+        // Server says crash already happened before our request landed.
+        // Roll back optimistic credit (we never actually credited locally, only displayed).
+        setCashoutResult(null);
+        cashedOutRef.current = false;
+        // Show the round-lost message as a toast (no crash-0)
+        toast.error(`${t("crashed")} ${(crashAt ?? mNow).toFixed(2)}x`);
       } else {
-        // Successful cashout — show inline + toast
-        setCashoutResult({ mult: mNow, win: r.data.win });
-        toast.success(`+${r.data.win} ⭐ @ ${mNow.toFixed(2)}x`);
+        // Successful cashout — confirm with server-credited balance & exact win
+        if (r.data?.user) setUser(r.data.user);
+        setCashoutResult({ mult: mNow, win: r.data.win ?? optimisticWin });
+        toast.success(`+${r.data.win ?? optimisticWin} ⭐ @ ${mNow.toFixed(2)}x`);
       }
       setGameId(null);
-    } catch (e) { toast.error(t("failed")); }
+    } catch (e) {
+      // Network/transport failure: keep optimistic message visible and let user retry later;
+      // but mark not cashed so a re-render or next round resets cleanly.
+      toast.error(t("failed"));
+    }
+  };
+
+  // Distribution-matched sampler for visual rounds — used only when no bet placed
+  const sampleVisualCrash = () => {
+    const r = Math.random() * 100;
+    let v;
+    if (r < 20) v = 1.01 + Math.random() * 0.19;
+    else if (r < 45) v = 1.21 + Math.random() * 0.29;
+    else if (r < 70) v = 1.51 + Math.random() * 0.49;
+    else if (r < 88) v = 2.01 + Math.random() * 0.99;
+    else if (r < 96) v = 3.01 + Math.random() * 1.99;
+    else if (r < 99.9) v = 5.01 + Math.random() * 4.99;
+    else v = 10.01 + Math.random() * 39.99;
+    return +v.toFixed(2);
   };
 
   const crashed = phase === PHASE_CRASH;
@@ -156,19 +205,42 @@ export default function CrashPage() {
           <path d={pathD} stroke="url(#cv)" strokeWidth="0.8" fill="none" style={{ filter: `drop-shadow(0 0 4px ${crashed ? "hsla(0,90%,55%,0.7)" : "hsla(140,90%,50%,0.7)"})` }} />
         </svg>
         {/* center display */}
-        <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+        <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none px-3">
           {phase === PHASE_WAIT ? (
             <div className="font-display text-7xl text-yellow-300" style={{ textShadow: "0 0 30px hsla(45,95%,60%,0.8)" }} data-testid="crash-countdown">{countdown > 0 ? countdown : "GO"}</div>
+          ) : cashoutResult ? (
+            // Player already cashed out — main result is the cashout (never overwritten by crash)
+            <>
+              <div
+                className="font-display text-5xl tracking-tight"
+                style={{ color: "hsl(140 90% 65%)", textShadow: "0 0 30px hsla(140,90%,55%,0.8)" }}
+                data-testid="crash-mult"
+              >
+                {cashoutResult.mult.toFixed(2)}x
+              </div>
+              <div className="mt-2 text-base text-green-300 font-bold text-center" data-testid="cashout-msg">
+                {t("cashedOutMsg")} {cashoutResult.win}⭐ {t("at")} {cashoutResult.mult.toFixed(2)}x
+              </div>
+              {crashed && Number.isFinite(crashAt) && crashAt > 0 && (
+                <div className="mt-1 text-[11px] uppercase tracking-widest text-white/55" data-testid="crash-secondary">
+                  {t("roundCrashedAt")} {crashAt.toFixed(2)}x
+                </div>
+              )}
+            </>
           ) : (
             <>
               <div className="font-display text-6xl tracking-tight"
                 style={{ color: crashed ? "hsl(0 90% 65%)" : "hsl(140 90% 65%)",
                   textShadow: crashed ? "0 0 30px hsla(0,90%,55%,0.9)" : "0 0 30px hsla(140,90%,55%,0.7)" }}
                 data-testid="crash-mult">{mult.toFixed(2)}x</div>
-              {crashed && <div className="mt-2 font-display text-2xl text-red-400 tracking-widest" data-testid="crash-label">{t("crashed").toUpperCase()}</div>}
-              {cashoutResult && (
-                <div className="mt-2 text-sm text-green-300 font-bold" data-testid="cashout-msg">
-                  {t("cashedOutMsg")} {cashoutResult.win}⭐ {t("at")} {cashoutResult.mult.toFixed(2)}x
+              {crashed && Number.isFinite(crashAt) && crashAt > 0 && (
+                <div className="mt-2 font-display text-xl text-red-400 tracking-widest text-center" data-testid="crash-label">
+                  {t("roundCrashedAt")} {crashAt.toFixed(2)}x
+                  {lostThisRound && (
+                    <div className="mt-1 text-xs font-normal opacity-90">
+                      {t("youLost")} {bet}⭐
+                    </div>
+                  )}
                 </div>
               )}
             </>

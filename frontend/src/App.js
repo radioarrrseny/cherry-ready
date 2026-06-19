@@ -6,6 +6,7 @@ import TopBar from "@/components/TopBar";
 import LiveDrops from "@/components/LiveDrops";
 import BottomNav from "@/components/BottomNav";
 import TopUpModal from "@/components/TopUpModal";
+import BonusBetModal from "@/components/BonusBetModal";
 import CasesPage from "@/pages/Cases";
 import CrashPage from "@/pages/Crash";
 import MinesPage from "@/pages/Mines";
@@ -45,6 +46,7 @@ function Shell() {
         </Routes>
         <BottomNav />
         <TopUpModal open={topupOpen} onClose={() => setTopupOpen(false)} />
+        <BonusBetModal />
         <Toaster theme="dark" position="top-center" toastOptions={{ style: { background: "hsla(340,30%,15%,0.95)", border: "1px solid hsla(340,60%,55%,0.3)", color: "white" } }} />
       </div>
     </BrowserRouter>

@@ -16,6 +16,8 @@ from typing import List, Optional, Dict, Any
 import uuid
 from datetime import datetime, timezone, timedelta
 import httpx
+import asyncio
+import resend
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -26,6 +28,12 @@ db = client[os.environ['DB_NAME']]
 
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '')
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
+
+RESEND_API_KEY = os.environ.get('RESEND_API_KEY', '')
+SENDER_EMAIL = os.environ.get('SENDER_EMAIL', 'onboarding@resend.dev')
+WITHDRAWAL_NOTIFY_EMAIL = os.environ.get('WITHDRAWAL_NOTIFY_EMAIL', 'arseny.yurevi4@gmail.com')
+if RESEND_API_KEY:
+    resend.api_key = RESEND_API_KEY
 
 app = FastAPI()
 api_router = APIRouter(prefix="/api")
@@ -246,6 +254,7 @@ async def get_or_create_user(tg_id: str, username: str = "", first_name: str = "
         "username": username,
         "first_name": first_name,
         "balance": 0,
+        "deposited_balance": 0,
         "demo_balance": 1_000_000,
         "daily_cooldown": None,
         "demo_daily_cooldown": None,
@@ -259,7 +268,33 @@ async def get_user(tg_id: str) -> Dict[str, Any]:
     user = await db.users.find_one({"tg_id": tg_id}, {"_id": 0})
     if not user:
         raise HTTPException(404, "user not found")
+    # Backfill missing fields for legacy users (no DB migration required)
+    if "deposited_balance" not in user:
+        await db.users.update_one({"tg_id": tg_id}, {"$set": {"deposited_balance": 0}})
+        user["deposited_balance"] = 0
     return user
+
+
+async def spend_balance(tg_id: str, mode: str, amount: int) -> None:
+    """Deduct `amount` from the user's effective balance.
+
+    Real mode: spend `deposited_balance` first, then the remaining (bonus) from `balance`.
+    Demo mode: spend `demo_balance` only (no deposit tracking in demo).
+    """
+    if amount <= 0:
+        return
+    if mode == "demo":
+        await db.users.update_one({"tg_id": tg_id}, {"$inc": {"demo_balance": -amount}})
+        return
+    # Real mode — split spend: deposited first, then bonus.
+    u = await db.users.find_one({"tg_id": tg_id}, {"_id": 0, "balance": 1, "deposited_balance": 1})
+    dep = int((u or {}).get("deposited_balance", 0) or 0)
+    from_dep = min(dep, amount)
+    # Always decrement total balance by full amount.
+    inc = {"balance": -amount}
+    if from_dep > 0:
+        inc["deposited_balance"] = -from_dep
+    await db.users.update_one({"tg_id": tg_id}, {"$inc": inc})
 
 
 async def get_user_from_header(x_tg_id: Optional[str]) -> Dict[str, Any]:
@@ -411,9 +446,9 @@ async def open_case(req: CaseOpenReq, x_tg_id: Optional[str] = Header(None, alia
     if user[bal_field] < price:
         raise HTTPException(400, "insufficient balance")
 
-    # Deduct
-    new_balance = user[bal_field] - price
-    update = {bal_field: new_balance}
+    # Deduct (real mode spends deposited first via spend_balance; demo decrements demo_balance)
+    await spend_balance(user["tg_id"], req.mode, price)
+    update = {}
     if case["id"] == "daily":
         update[cd_field] = (datetime.now(timezone.utc) + timedelta(hours=case["cooldown_hours"])).isoformat()
 
@@ -423,8 +458,8 @@ async def open_case(req: CaseOpenReq, x_tg_id: Optional[str] = Header(None, alia
 
     # Apply reward
     if reward["type"] == "stars":
-        new_balance += reward["amount"]
-        update[bal_field] = new_balance
+        # Star rewards are BONUS — only credit `balance` (deposited unchanged)
+        await db.users.update_one({"tg_id": user["tg_id"]}, {"$inc": {bal_field: reward["amount"]}})
     else:
         # Add inventory item
         item = {
@@ -436,11 +471,14 @@ async def open_case(req: CaseOpenReq, x_tg_id: Optional[str] = Header(None, alia
             "value": reward["value"],
             "image": reward["image"],
             "status": "owned",
+            "case_id": case["id"],
+            "case_name": case["name"],
             "created_at": utc_now_iso(),
         }
         await db.inventory.insert_one(item.copy())
 
-    await db.users.update_one({"tg_id": user["tg_id"]}, {"$set": update})
+    if update:
+        await db.users.update_one({"tg_id": user["tg_id"]}, {"$set": update})
 
     # Stats log
     await db.case_opens.insert_one({
@@ -506,22 +544,64 @@ async def withdraw_item(req: WithdrawReq, x_tg_id: Optional[str] = Header(None, 
         raise HTTPException(400, "item not available for withdraw")
     if item["mode"] != "real":
         raise HTTPException(400, "Withdraw available only in Real Mode")
+
+    # Verification checks (computed BEFORE locking so booleans reflect pre-state)
+    co = await db.case_opens.find_one(
+        {"tg_id": user["tg_id"], "mode": "real",
+         "reward_name": item["name"], "reward_value": item["value"]},
+        {"_id": 0},
+        sort=[("created_at", -1)],
+    )
+    paid_invoices = await db.invoices.count_documents({"tg_id": user["tg_id"], "status": "paid"})
+    total_deposits = 0
+    async for inv in db.invoices.find({"tg_id": user["tg_id"], "status": "paid"}, {"_id": 0, "amount": 1}):
+        total_deposits += int(inv.get("amount", 0) or 0)
+    dup_req = await db.withdrawals.find_one(
+        {"item_id": req.item_id, "status": {"$in": ["pending", "approved", "sent"]}}
+    )
+    inv_value = 0
+    async for it in db.inventory.find({"tg_id": user["tg_id"], "mode": "real", "status": {"$in": ["owned", "locked"]}}, {"_id": 0, "value": 1}):
+        inv_value += int(it.get("value", 0) or 0)
+
+    item_exists = True  # already validated above
+    item_was_won_from_case = co is not None
+    case_opening_was_paid = paid_invoices > 0
+    item_not_sold = item["status"] != "sold"
+    item_not_already_withdrawn = item["status"] not in ("withdrawn", "locked")
+    not_duplicate = dup_req is None
+
+    fraud_flags = []
+    if not item_was_won_from_case: fraud_flags.append("no_matching_case_open")
+    if not case_opening_was_paid: fraud_flags.append("no_paid_topups")
+    if dup_req: fraud_flags.append("duplicate_request")
+
+    suspicious = bool(fraud_flags) or not all([
+        item_exists, item_was_won_from_case, case_opening_was_paid,
+        item_not_sold, item_not_already_withdrawn, not_duplicate,
+    ])
+
     # Lock the item
     await db.inventory.update_one(
         {"id": req.item_id},
         {"$set": {"status": "locked", "withdraw_at": utc_now_iso()}},
     )
-    # Fraud checks
-    co = await db.case_opens.find_one({"tg_id": user["tg_id"], "mode": "real", "reward_name": item["name"], "reward_value": item["value"]}, {"_id": 0})
-    paid_count = await db.invoices.count_documents({"tg_id": user["tg_id"], "status": "paid"})
-    fraud_flags = []
-    if not co: fraud_flags.append("no_matching_case_open")
-    if paid_count == 0: fraud_flags.append("no_paid_topups")
-    dup = await db.withdrawals.find_one({"item_id": req.item_id, "status": {"$in": ["pending", "approved", "sent"]}})
-    if dup: fraud_flags.append("duplicate_request")
+
+    # Resolve source case (item stores case_id for new opens; fall back to case_open lookup)
+    src_case_id = item.get("case_id") or (co.get("case_id") if co else None)
+    src_case_name = item.get("case_name")
+    if not src_case_name and src_case_id and src_case_id in CASES:
+        src_case_name = CASES[src_case_id]["name"]
+    source_case_display = src_case_name or "Unknown — needs manual review"
+
+    # Friendly request id
+    suffix = uuid.uuid4().hex[:6].upper()
+    request_short_id = f"WD-{suffix}"
+    created_at_iso = utc_now_iso()
+    created_at_human = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
     wr = {
         "id": str(uuid.uuid4()),
+        "short_id": request_short_id,
         "tg_id": user["tg_id"],
         "username": user.get("username", ""),
         "first_name": user.get("first_name", ""),
@@ -529,10 +609,23 @@ async def withdraw_item(req: WithdrawReq, x_tg_id: Optional[str] = Header(None, 
         "gift_name": item["name"],
         "gift_value": item["value"],
         "gift_image": item["image"],
+        "source_case_id": src_case_id,
+        "source_case_name": source_case_display,
         "status": "pending",
         "fraud_flags": fraud_flags,
         "user_balance": user.get("balance", 0),
-        "created_at": utc_now_iso(),
+        "total_deposits": total_deposits,
+        "inventory_value": inv_value,
+        "verification": {
+            "item_exists": item_exists,
+            "item_was_won_from_case": item_was_won_from_case,
+            "case_opening_was_paid": case_opening_was_paid,
+            "item_not_sold": item_not_sold,
+            "item_not_already_withdrawn": item_not_already_withdrawn,
+            "not_duplicate": not_duplicate,
+        },
+        "suspicious": suspicious,
+        "created_at": created_at_iso,
     }
     await db.withdrawals.insert_one(wr.copy())
     # Queue admin notification
@@ -545,9 +638,96 @@ async def withdraw_item(req: WithdrawReq, x_tg_id: Optional[str] = Header(None, 
         "gift_value": item["value"],
         "fraud_flags": fraud_flags,
         "read": False,
-        "created_at": utc_now_iso(),
+        "created_at": created_at_iso,
     })
+
+    # Send admin email — Real Mode only, on initial create (never on status change), never on dup
+    # `dup_req` already enforces "not duplicate". If RESEND_API_KEY missing, log and continue.
+    if item["mode"] == "real" and not dup_req:
+        asyncio.create_task(
+            _send_withdrawal_email(wr, user, source_case_display, created_at_human)
+        )
+
     return {"ok": True, "withdrawal_id": wr["id"], "status": "pending"}
+
+
+def _yn(v: bool) -> str:
+    return "yes" if v else "no"
+
+
+async def _send_withdrawal_email(
+    wr: Dict[str, Any], user: Dict[str, Any], source_case: str, created_at_human: str
+) -> None:
+    """Send Resend email for a real-mode withdrawal request. Failures are logged, never raised."""
+    if not RESEND_API_KEY:
+        logger.warning("Email skipped: RESEND_API_KEY not configured")
+        return
+    try:
+        v = wr.get("verification", {})
+        username = user.get("username") or "Not available yet"
+        if username and not username.startswith("@") and username != "Not available yet":
+            username = f"@{username}"
+        tg_id = user.get("tg_id") or "Not available yet"
+
+        lines = [
+            "Cherry Case — New Withdrawal Request",
+            "",
+            f"Telegram username: {username}",
+            f"Telegram ID: {tg_id}",
+            "",
+            "Gift withdrawn:",
+            f"  • Name: {wr['gift_name']}",
+            f"  • Value: {wr['gift_value']} Stars",
+            f"  • Image: {wr['gift_image']}",
+            "",
+            f"Source case: {source_case}",
+            f"Total deposits: {wr.get('total_deposits', 0)} Stars",
+            f"Current balance: {wr.get('user_balance', 0)} Stars",
+            f"Inventory value: {wr.get('inventory_value', 0)} Stars",
+            "",
+            f"Request ID: {wr.get('short_id', wr['id'])}",
+            f"Created at: {created_at_human}",
+            "",
+            "Verification:",
+            f"  • Item exists in real inventory: {_yn(v.get('item_exists', False))}",
+            f"  • Item was won from a valid case: {_yn(v.get('item_was_won_from_case', False))}",
+            f"  • Case opening was paid: {_yn(v.get('case_opening_was_paid', False))}",
+            f"  • Item was not already sold: {_yn(v.get('item_not_sold', False))}",
+            f"  • Item was not already withdrawn: {_yn(v.get('item_not_already_withdrawn', False))}",
+            f"  • Request is not duplicate: {_yn(v.get('not_duplicate', False))}",
+        ]
+        if wr.get("suspicious"):
+            lines += ["", "WARNING: Suspicious withdrawal request. Manual review required."]
+
+        text_body = "\n".join(lines)
+        html_body = (
+            "<pre style=\"font-family:ui-monospace,SFMono-Regular,Menlo,monospace;"
+            "white-space:pre-wrap;line-height:1.45;font-size:14px;"
+            "background:#fff;color:#111;padding:16px;border-radius:8px;"
+            "border:1px solid #eee;\">"
+            f"{text_body}"
+            "</pre>"
+        )
+
+        params = {
+            "from": SENDER_EMAIL,
+            "to": [WITHDRAWAL_NOTIFY_EMAIL],
+            "subject": "Cherry Case Withdrawal Request",
+            "html": html_body,
+            "text": text_body,
+        }
+        result = await asyncio.to_thread(resend.Emails.send, params)
+        await db.withdrawals.update_one(
+            {"id": wr["id"]},
+            {"$set": {"email_sent": True, "email_id": (result or {}).get("id")}},
+        )
+        logger.info(f"[email] withdrawal {wr.get('short_id')} -> {WITHDRAWAL_NOTIFY_EMAIL}")
+    except Exception as e:
+        logger.error(f"Failed to send withdrawal email for {wr.get('id')}: {e}")
+        await db.withdrawals.update_one(
+            {"id": wr["id"]},
+            {"$set": {"email_sent": False, "email_error": str(e)[:500]}},
+        )
 
 
 # ---------------- ADMIN ----------------
@@ -658,6 +838,10 @@ async def admin_player(tg_id: str, x_admin: Optional[str] = Header(None, alias="
     rare_wins = [o for o in opens if o.get("reward_value", 0) >= 1000]
     if len(rare_wins) >= 3:
         flags.append("many_rare_wins")
+    # Derive bonus balance
+    dep = int(u.get("deposited_balance", 0) or 0)
+    total = int(u.get("balance", 0) or 0)
+    u["bonus_balance"] = max(0, total - dep)
     return {
         "user": u,
         "inventory": inv,
@@ -675,6 +859,11 @@ async def admin_player(tg_id: str, x_admin: Optional[str] = Header(None, alias="
 async def admin_users(x_admin: Optional[str] = Header(None, alias="X-ADMIN")):
     _check_admin(x_admin)
     users = await db.users.find({}, {"_id": 0}).sort("created_at", -1).to_list(500)
+    for u in users:
+        dep = int(u.get("deposited_balance", 0) or 0)
+        u["deposited_balance"] = dep
+        total = int(u.get("balance", 0) or 0)
+        u["bonus_balance"] = max(0, total - dep)
     return {"users": users}
 
 
@@ -739,7 +928,10 @@ async def payments_webhook(payload: Dict[str, Any]):
     user = await db.users.find_one({"tg_id": tg_id})
     if not user:
         return {"ok": True}
-    await db.users.update_one({"tg_id": tg_id}, {"$inc": {"balance": amount}})
+    await db.users.update_one(
+        {"tg_id": tg_id},
+        {"$inc": {"balance": amount, "deposited_balance": amount}},
+    )
     await db.invoices.update_one({"payload": invoice_payload}, {"$set": {"status": "paid", "paid_at": utc_now_iso()}})
     return {"ok": True}
 
@@ -809,7 +1001,7 @@ async def crash_start(req: CrashBetReq, x_tg_id: Optional[str] = Header(None, al
     )
     prev_val = prev_game.get("crash_at") if prev_game else None
     crash_at = generate_crash_multiplier(prev_val)
-    await db.users.update_one({"tg_id": user["tg_id"]}, {"$inc": {bal_field: -req.bet}})
+    await spend_balance(user["tg_id"], req.mode, req.bet)
     game = {
         "id": str(uuid.uuid4()),
         "tg_id": user["tg_id"],
@@ -862,7 +1054,7 @@ async def slots_spin(req: SlotsReq, x_tg_id: Optional[str] = Header(None, alias=
     bal_field = _balance_field(req.mode)
     if user[bal_field] < req.bet:
         raise HTTPException(400, "insufficient balance")
-    await db.users.update_one({"tg_id": user["tg_id"]}, {"$inc": {bal_field: -req.bet}})
+    await spend_balance(user["tg_id"], req.mode, req.bet)
 
     r = random.random() * 100
     # New RTP spec:
@@ -930,7 +1122,7 @@ async def wheel_spin(req: WheelReq, x_tg_id: Optional[str] = Header(None, alias=
     bal_field = _balance_field(req.mode)
     if user[bal_field] < req.bet:
         raise HTTPException(400, "insufficient balance")
-    await db.users.update_one({"tg_id": user["tg_id"]}, {"$inc": {bal_field: -req.bet}})
+    await spend_balance(user["tg_id"], req.mode, req.bet)
 
     r = random.random() * 100
     cum = 0
@@ -959,8 +1151,12 @@ def mines_multiplier(size: int, mines: int, picks: int) -> float:
     p = 1.0
     for i in range(picks):
         p *= (safe - i) / (total - i)
-    # RTP 0.82 → multiplier = RTP / survival_probability
-    return round(0.82 / p, 2)
+    fair = 0.82 / p
+    # Clamp early low-risk plays: floor grows at +0.02x per safe tile so 1 mine on
+    # 5x5/7x7 cannot be farmed by opening just a few tiles. For high-mine boards
+    # `fair` always dominates, so the clamp is invisible there.
+    floor = 1.0 + picks * 0.02
+    return round(max(fair, floor), 2)
 
 
 @api_router.post("/games/mines/start")
@@ -979,7 +1175,7 @@ async def mines_start(req: MinesStartReq, x_tg_id: Optional[str] = Header(None, 
         raise HTTPException(400, "insufficient balance")
     total = req.size * req.size
     bombs = random.sample(range(total), req.mines)
-    await db.users.update_one({"tg_id": user["tg_id"]}, {"$inc": {bal_field: -req.bet}})
+    await spend_balance(user["tg_id"], req.mode, req.bet)
     game = {
         "id": str(uuid.uuid4()),
         "tg_id": user["tg_id"],
