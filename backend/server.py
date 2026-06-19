@@ -777,14 +777,16 @@ def _sample_crash_multiplier() -> float:
     return round(val, 2)
 
 
-def generate_crash_multiplier() -> float:
-    """Generate next crash multiplier; avoid exact repeats and never return 0."""
+def generate_crash_multiplier(last: Optional[float] = None) -> float:
+    """Generate next crash multiplier; avoid exact repeats vs ``last`` and never return 0."""
     global _last_crash_multiplier
+    prev = last if last is not None else _last_crash_multiplier
+    val = 1.01
     for _ in range(5):
         val = _sample_crash_multiplier()
         if val <= 0:
             continue
-        if val != _last_crash_multiplier:
+        if val != prev:
             _last_crash_multiplier = val
             return val
     # If repeated 5 times in a row (extremely unlikely), nudge it slightly.
@@ -801,7 +803,12 @@ async def crash_start(req: CrashBetReq, x_tg_id: Optional[str] = Header(None, al
     bal_field = _balance_field(req.mode)
     if user[bal_field] < req.bet:
         raise HTTPException(400, "insufficient balance")
-    crash_at = generate_crash_multiplier()
+    # Per-user no-repeat: fetch this user's previous crash_at
+    prev_game = await db.crash_games.find_one(
+        {"tg_id": user["tg_id"]}, {"_id": 0, "crash_at": 1}, sort=[("created_at", -1)]
+    )
+    prev_val = prev_game.get("crash_at") if prev_game else None
+    crash_at = generate_crash_multiplier(prev_val)
     await db.users.update_one({"tg_id": user["tg_id"]}, {"$inc": {bal_field: -req.bet}})
     game = {
         "id": str(uuid.uuid4()),
