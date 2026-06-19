@@ -1,56 +1,71 @@
-import { useEffect } from "react";
-import "@/App.css";
+import React, { useState } from "react";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
-import axios from "axios";
-import { HOME } from "@/constants/testIds";
+import { Toaster } from "sonner";
+import { AppProvider, useApp } from "@/context/AppContext";
+import TopBar from "@/components/TopBar";
+import LiveDrops from "@/components/LiveDrops";
+import BottomNav from "@/components/BottomNav";
+import TopUpModal from "@/components/TopUpModal";
+import CasesPage from "@/pages/Cases";
+import CrashPage from "@/pages/Crash";
+import MinesPage from "@/pages/Mines";
+import SlotsPage from "@/pages/Slots";
+import WheelPage from "@/pages/Wheel";
+import InventoryPage from "@/pages/Inventory";
+import ProfilePage from "@/pages/Profile";
+import GamesPage from "@/pages/Games";
+import AdminPage from "@/pages/Admin";
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
-const API = `${BACKEND_URL}/api`;
+function Shell() {
+  const { loading } = useApp();
+  const [topupOpen, setTopupOpen] = useState(false);
 
-const Home = () => {
-  const helloWorldApi = async () => {
-    try {
-      const response = await axios.get(`${API}/`);
-      console.log(response.data.message);
-    } catch (e) {
-      console.error(e, `errored out requesting / api`);
-    }
-  };
-
-  useEffect(() => {
-    helloWorldApi();
-  }, []);
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="font-display text-2xl text-cherry pulse-glow rounded-full px-6 py-3 cherry-gradient">Cherry Case</div>
+      </div>
+    );
+  }
 
   return (
-    <div>
-      <header className="App-header">
-        <a
-          data-testid={HOME.emergentLink}
-          className="App-link"
-          href="https://emergent.sh"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <img src="https://avatars.githubusercontent.com/in/1201222?s=120&u=2686cf91179bbafbc7a71bfbc43004cf9ae1acea&v=4" />
-        </a>
-        <p className="mt-5">Building something incredible ~!</p>
-      </header>
-    </div>
-  );
-};
-
-function App() {
-  return (
-    <div className="App">
-      <BrowserRouter>
+    <BrowserRouter>
+      <div className="min-h-screen pb-20">
+        <TopBar onTopUp={() => setTopupOpen(true)} />
+        <LiveDrops />
         <Routes>
-          <Route path="/" element={<Home />}>
-            <Route index element={<Home />} />
-          </Route>
+          <Route path="/" element={<CasesPage />} />
+          <Route path="/games" element={<GamesPage />} />
+          <Route path="/crash" element={<CrashPage />} />
+          <Route path="/mines" element={<MinesPage />} />
+          <Route path="/slots" element={<SlotsPage />} />
+          <Route path="/wheel" element={<WheelPage />} />
+          <Route path="/inventory" element={<InventoryPage />} />
+          <Route path="/profile" element={<ProfilePage />} />
         </Routes>
-      </BrowserRouter>
-    </div>
+        <BottomNav />
+        <TopUpModal open={topupOpen} onClose={() => setTopupOpen(false)} />
+        <Toaster theme="dark" position="top-center" toastOptions={{ style: { background: "hsla(340,30%,15%,0.95)", border: "1px solid hsla(340,60%,55%,0.3)", color: "white" } }} />
+      </div>
+    </BrowserRouter>
   );
 }
 
-export default App;
+export default function App() {
+  // Admin route bypasses Telegram auth provider
+  if (typeof window !== "undefined" && window.location.pathname.startsWith("/admin")) {
+    return (
+      <BrowserRouter>
+        <Routes>
+          <Route path="/admin" element={<AdminPage />} />
+        </Routes>
+        <Toaster theme="dark" position="top-center" toastOptions={{ style: { background: "hsla(340,30%,15%,0.95)", border: "1px solid hsla(340,60%,55%,0.3)", color: "white" } }} />
+      </BrowserRouter>
+    );
+  }
+  return (
+    <AppProvider>
+      <Shell />
+    </AppProvider>
+  );
+}
