@@ -9,11 +9,11 @@ import TopUpModal from "@/components/TopUpModal";
 import BonusBetModal from "@/components/BonusBetModal";
 import CasesPage from "@/pages/Cases";
 import CrashPage from "@/pages/Crash";
-// Mines temporarily disabled — UI route shows a Coming Soon screen.
-// Mines.jsx and backend Mines code are preserved and will be re-enabled later.
+// Mines / Slots / Wheel temporarily disabled — UI routes show Coming Soon screens.
+// Original game files and backend endpoints are preserved and will be re-enabled later.
 import MinesComingSoon from "@/pages/MinesComingSoon";
-import SlotsPage from "@/pages/Slots";
-import WheelPage from "@/pages/Wheel";
+import SlotsComingSoon from "@/pages/SlotsComingSoon";
+import WheelComingSoon from "@/pages/WheelComingSoon";
 import InventoryPage from "@/pages/Inventory";
 import ProfilePage from "@/pages/Profile";
 import GamesPage from "@/pages/Games";
@@ -41,8 +41,8 @@ function Shell() {
           <Route path="/games" element={<GamesPage />} />
           <Route path="/crash" element={<CrashPage />} />
           <Route path="/mines" element={<MinesComingSoon />} />
-          <Route path="/slots" element={<SlotsPage />} />
-          <Route path="/wheel" element={<WheelPage />} />
+          <Route path="/slots" element={<SlotsComingSoon />} />
+          <Route path="/wheel" element={<WheelComingSoon />} />
           <Route path="/inventory" element={<InventoryPage />} />
           <Route path="/profile" element={<ProfilePage />} />
         </Routes>
