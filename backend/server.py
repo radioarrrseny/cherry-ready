@@ -1151,11 +1151,14 @@ def mines_multiplier(size: int, mines: int, picks: int) -> float:
     p = 1.0
     for i in range(picks):
         p *= (safe - i) / (total - i)
-    fair = 0.82 / p
-    # Clamp early low-risk plays: floor grows at +0.02x per safe tile so 1 mine on
-    # 5x5/7x7 cannot be farmed by opening just a few tiles. For high-mine boards
-    # `fair` always dominates, so the clamp is invisible there.
-    floor = 1.0 + picks * 0.02
+    # Lowered RTP to ~78% per latest spec; high-mine setups still pay strongly via `fair`.
+    RTP = 0.78
+    fair = RTP / p
+    # Floor: very slow growth for low-mine setups so 5x5/7x7 with 1–6 mines can't be
+    # farmed by opening a few tiles. Per-tile increment scales with mine count and is
+    # softer on larger boards (denominator `size`).
+    increment = (0.07 / size) * (mines ** 0.5)
+    floor = 1.0 + picks * increment
     return round(max(fair, floor), 2)
 
 

@@ -24,8 +24,14 @@ export default function CrashPage() {
 
   const [cashoutResult, setCashoutResult] = useState(null);
   const [lostThisRound, setLostThisRound] = useState(false);
-  // Atomic cashout flag (ref so we can read instantly inside the rAF loop and async cashout)
+  // Snapshot of THIS round's crashAt — set once at the moment of crash, never overwritten
+  // by subsequent placeBet calls or other state updates. Cleared on next PHASE_WAIT.
+  const [roundCrashedAt, setRoundCrashedAt] = useState(null);
+  // Atomic flags (refs so we can read instantly inside the rAF loop / async cashout)
   const cashedOutRef = useRef(false);
+  const betPlacedRef = useRef(false);
+  // Identity of the round currently in flight — prevents any leakage between rounds.
+  const currentRoundRef = useRef({ id: null, crashAt: null });
 
   useEffect(() => {
     if (phase === PHASE_FLY || phase === PHASE_CRASH) return;
@@ -40,13 +46,15 @@ export default function CrashPage() {
 
   useEffect(() => {
     if (phase !== PHASE_FLY) return;
+    const target = currentRoundRef.current.crashAt;
+    if (!target) return;
     setPlayers((prev) => prev.map((p) => {
-      if (p.status === "playing" && mult >= p.target && p.target < crashAt) {
+      if (p.status === "playing" && mult >= p.target && p.target < target) {
         return { ...p, status: "cashed", cashout: p.target, win: Math.floor(p.bet * p.target) };
       }
       return p;
     }));
-  }, [mult, phase, crashAt]);
+  }, [mult, phase]);
 
   useEffect(() => {
     if (phase === PHASE_CRASH) {
@@ -57,9 +65,18 @@ export default function CrashPage() {
   useEffect(() => {
     let timer;
     if (phase === PHASE_WAIT) {
-      setCountdown(3); setMult(1.0); setCrashAt(null); setGameId(null); setPathD("M 0 100"); setCashoutResult(null);
-      cashedOutRef.current = false;
+      // Full reset — current round is over, next round NOT yet generated.
+      setCountdown(3);
+      setMult(1.0);
+      setCrashAt(null);
+      setGameId(null);
+      setPathD("M 0 100");
+      setCashoutResult(null);
+      setRoundCrashedAt(null);
       setLostThisRound(false);
+      cashedOutRef.current = false;
+      betPlacedRef.current = false;
+      currentRoundRef.current = { id: null, crashAt: null };
       let c = 3;
       timer = setInterval(() => {
         c -= 1; setCountdown(c);
@@ -67,29 +84,37 @@ export default function CrashPage() {
       }, 1000);
     }
     return () => clearInterval(timer);
-    // eslint-disable-next-line
   }, [phase]);
 
   const startRound = async () => {
+    // 1) Establish THIS round's crash multiplier — never reuse a leaked value.
+    //    If the user has a placed bet, `crashAt` is already set from backend `/games/crash/start`.
+    //    Otherwise we sample a visual-only value mirroring the backend distribution.
     let crashTarget = crashAt;
     if (!crashTarget) {
-      // Visual-only fallback when no bet placed — mirrors backend distribution
-      // Avoid generating same value as the last shown round.
       const last = history[0]?.at;
       let attempts = 0;
       do {
         crashTarget = sampleVisualCrash();
         attempts += 1;
       } while (crashTarget === last && attempts < 5);
-      // Nudge slightly if still same (extremely unlikely)
       if (crashTarget === last) {
         crashTarget = +Math.max(1.01, crashTarget + 0.01).toFixed(2);
       }
       setCrashAt(crashTarget);
     }
+    // Lock the round identity. From this point on, no external state change can
+    // overwrite the crash value used by THIS round's display / payout logic.
+    const roundId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    currentRoundRef.current = { id: roundId, crashAt: crashTarget };
+
     setPhase(PHASE_FLY);
     startRef.current = performance.now();
     const loop = () => {
+      // Guard: if a new round somehow took over, abort this loop.
+      if (currentRoundRef.current.id !== roundId) {
+        cancelAnimationFrame(rafRef.current); return;
+      }
       const e = (performance.now() - startRef.current) / 1000;
       const m = +(Math.pow(1.06, e * 2)).toFixed(2);
       setMult(m);
@@ -97,11 +122,14 @@ export default function CrashPage() {
       const yR = Math.min(0.85, Math.log2(Math.max(1, m)) * 0.45);
       setPathD(`M 0 100 Q ${xR * 50} ${100 - yR * 30} ${xR * 100} ${100 - yR * 100}`);
       if (m >= crashTarget) {
-        setMult(crashTarget); setPhase(PHASE_CRASH);
-        // Mark loss if a bet was placed and user never cashed out
-        if (betPlaced && !cashedOutRef.current) setLostThisRound(true);
+        // 2) Round crash — snapshot crashTarget into the locked display state.
+        setMult(crashTarget);
+        setRoundCrashedAt(crashTarget);
+        setPhase(PHASE_CRASH);
+        // Mark loss if a bet was placed and user never cashed out (use refs to avoid stale closures)
+        if (betPlacedRef.current && !cashedOutRef.current) setLostThisRound(true);
+        // 3) Append to history ONLY now — completed rounds only.
         setHistory((h) => {
-          // Defensive: never store back-to-back duplicates client-side
           if (h.length > 0 && h[0].at === crashTarget) {
             const adjusted = +Math.max(1.01, crashTarget + 0.01).toFixed(2);
             return [{ at: adjusted }, ...h].slice(0, 6);
@@ -109,6 +137,7 @@ export default function CrashPage() {
           return [{ at: crashTarget }, ...h].slice(0, 6);
         });
         setBetPlaced(false);
+        betPlacedRef.current = false;
         setTimeout(() => setPhase(PHASE_WAIT), 2200);
         cancelAnimationFrame(rafRef.current); return;
       }
@@ -124,42 +153,42 @@ export default function CrashPage() {
       try {
         const r = await api.post("/games/crash/start", { bet, mode });
         if (r.data.user) setUser(r.data.user);
-        setGameId(r.data.game_id); setCrashAt(r.data.crash_at); setBetPlaced(true);
+        setGameId(r.data.game_id);
+        setCrashAt(r.data.crash_at);
+        setBetPlaced(true);
+        betPlacedRef.current = true;
       } catch (e) { toast.error(e?.response?.data?.detail || t("failed")); }
     });
   };
 
   const cashout = async () => {
-    // Atomic guard — only allow ONCE per round, only while flying with active bet
+    // Strict round-isolation guards
     if (cashedOutRef.current) return;
-    if (phase !== PHASE_FLY || !betPlaced || !gameId) return;
+    if (phase !== PHASE_FLY || !betPlacedRef.current || !gameId) return;
+    // Only allow cashout against the CURRENT round (compare locked crashAt to live mult)
+    const round = currentRoundRef.current;
+    if (!round || round.crashAt == null) return;
     const mNow = mult;
+    if (mNow >= round.crashAt) return; // crash already happened — reject
     const optimisticWin = Math.floor(bet * mNow);
-    // 1. Freeze: flip atomic flag, lock multiplier display
     cashedOutRef.current = true;
     setBetPlaced(false);
-    // 2. Optimistically render the cashout message immediately — even if server is slow
+    betPlacedRef.current = false;
     setCashoutResult({ mult: mNow, win: optimisticWin });
     try {
       const r = await api.post("/games/crash/cashout", { game_id: gameId, multiplier: mNow });
-      // Use server response if it succeeded
       if (r.data?.lost) {
         // Server says crash already happened before our request landed.
-        // Roll back optimistic credit (we never actually credited locally, only displayed).
         setCashoutResult(null);
         cashedOutRef.current = false;
-        // Show the round-lost message as a toast (no crash-0)
-        toast.error(`${t("crashed")} ${(crashAt ?? mNow).toFixed(2)}x`);
+        toast.error(`${t("roundCrashedAt")} ${(round.crashAt).toFixed(2)}x`);
       } else {
-        // Successful cashout — confirm with server-credited balance & exact win
         if (r.data?.user) setUser(r.data.user);
         setCashoutResult({ mult: mNow, win: r.data.win ?? optimisticWin });
         toast.success(`+${r.data.win ?? optimisticWin} ⭐ @ ${mNow.toFixed(2)}x`);
       }
       setGameId(null);
     } catch (e) {
-      // Network/transport failure: keep optimistic message visible and let user retry later;
-      // but mark not cashed so a re-render or next round resets cleanly.
       toast.error(t("failed"));
     }
   };
@@ -220,14 +249,14 @@ export default function CrashPage() {
               >
                 {mult.toFixed(2)}x
               </div>
-              {crashed && Number.isFinite(crashAt) && crashAt > 0 && (
+              {crashed && Number.isFinite(roundCrashedAt) && roundCrashedAt > 0 && (
                 <div
                   className={`mt-2 font-display tracking-widest text-center ${
                     cashoutResult ? "text-sm text-white/60" : "text-xl text-red-400"
                   }`}
                   data-testid="crash-secondary"
                 >
-                  {t("roundCrashedAt")} {crashAt.toFixed(2)}x
+                  {t("roundCrashedAt")} {roundCrashedAt.toFixed(2)}x
                   {lostThisRound && !cashoutResult && (
                     <div className="mt-1 text-xs font-normal opacity-90" data-testid="you-lost">
                       {t("youLost")} {bet}⭐
