@@ -1099,13 +1099,13 @@ async def slots_spin(req: SlotsReq, x_tg_id: Optional[str] = Header(None, alias=
 
 # ---------------- WHEEL ----------------
 WHEEL_SEGMENTS = [
-    {"label": "0x", "mult": 0, "chance": 55},
-    {"label": "1.5x", "mult": 1.5, "chance": 25},
-    {"label": "2x", "mult": 2, "chance": 12},
-    {"label": "3x", "mult": 3, "chance": 5},
-    {"label": "5x", "mult": 5, "chance": 2},
-    {"label": "10x", "mult": 10, "chance": 0.8},
-    {"label": "25x", "mult": 25, "chance": 0.2},
+    {"label": "0x",   "mult": 0,    "chance": 95.0},
+    {"label": "1.5x", "mult": 1.5,  "chance": 3.0},
+    {"label": "2x",   "mult": 2,    "chance": 1.5},
+    {"label": "3x",   "mult": 3,    "chance": 0.4},
+    {"label": "5x",   "mult": 5,    "chance": 0.09},
+    {"label": "10x",  "mult": 10,   "chance": 0.0099},
+    {"label": "25x",  "mult": 25,   "chance": 0.0001},
 ]
 
 
