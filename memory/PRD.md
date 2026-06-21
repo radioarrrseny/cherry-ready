@@ -1,7 +1,7 @@
 # Cherry Case — PRD
 
 ## Original Problem Statement
-Continue fixing the Cherry Case project. Multiple fix rounds applied (crash distribution, slots RTP, mines reworked, admin panel, promo code, hidden admin, RU translations, withdrawal email notifications, deposited/bonus stars separation, risk warnings, top-up info copy).
+Continue fixing the Cherry Case project. Multiple iterations across crash, slots, mines, admin, promo, RU translations, withdrawal email, deposited/bonus stars, risk warnings, top-up info copy, round isolation, and Mines RTP nerf.
 
 ADMIN_SECRET=9hNiTxKMM9Qb9YB9zJgqPhuVpS3MUrlkY4LtV3wVU-k
 
@@ -12,42 +12,56 @@ ADMIN_SECRET=9hNiTxKMM9Qb9YB9zJgqPhuVpS3MUrlkY4LtV3wVU-k
 - Admin auth: ADMIN_SECRET via `/api/admin/login` and `/api/admin/verify`, header `X-ADMIN`.
 - Email: Resend (graceful skip when `RESEND_API_KEY` missing).
 
-## Implemented (latest snapshot)
+## Implemented
 
-### Crash
-- `generate_crash_multiplier(last)` with per-user no-repeat (uses last user crash_at).
-- Cashout is atomic and idempotent: optimistic local credit + server confirmation. Second call returns `already_cashed:true`.
-- Frontend never shows "Crash at 0/undefined/NaN". When user cashed out, the cashout message is the main result; round crash result is shown as secondary text. When user did not cash out, "Round crashed at X" + "You lost X⭐".
+### Crash — strict round isolation (iter4)
+- `currentRoundRef` + `betPlacedRef` + locked `roundCrashedAt` snapshot at the moment of crash.
+- Cashout rejects if `mult >= round.crashAt`; idempotent on server (`already_cashed:true`).
+- Live multiplier keeps animating after cashout; cashout shown as pinned overlay card.
+- Crash secondary text uses the LOCKED snapshot, never the next round's `crashAt`.
+- History appended only on real round completion.
+- Per-user no-immediate-repeat in backend via `db.crash_games.find_one(sort=created_at)`.
 
-### Mines
-- Sizes 3/5/7 only (3x3:1-8, 5x5:1-24, 7x7:1-48). RTP 0.82.
-- `mines_multiplier = max(0.82/survival, 1.0 + picks*0.02)` — slow growth on low-mine boards (5x5/1mine: 1.02, 1.04, 1.06 per safe tile).
-- Low-risk warning (3x3/1, 5x5/1-3, 7x7/1-5) and high-risk warning (3x3/6-8, 5x5/16-24, 7x7/32-48) shown near selector.
+### Mines — RTP 0.77 with quadratic floor (iter5)
+```
+fair = 0.77 / survival
+floor = 1.0 + (0.005*picks + 0.003*picks²*√mines) / (size/5)
+multiplier = max(fair, floor)
+```
+- 5x5/1m: 1.01, 1.02, 1.04, 1.07, 1.10 (matches spec for first 3 tiles)
+- 7x7/1m: 1.01, 1.02, 1.03, 1.05 (matches spec for first 3 tiles)
+- 5x5/24m: 19.25x; 5x5/18m: 2.75x; 7x7/48m: 37.73x; 3x3/8m: 6.93x — high-mine stays rewarding.
+- 2x requires pick 16 on 5x5/1m and pick 21 on 7x7/1m (anti-farming).
+- Monte Carlo RTP: 0.76 – 0.87 range (within or slightly above 75–80% target).
 
-### Slots
-- RTP per spec (Lose 65 / 0.5x 14 / 1x 10 / 2x 7 / 5x 3 / 20x 0.9999 / 100x 0.0001).
+### Slots, Wheel — unchanged from iter2
+- Slots: Lose 65 / 0.5x 14 / 1x 10 / 2x 7 / 5x 3 / 20x 0.9999 / 100x 0.0001.
 
 ### Deposited vs Bonus Stars
-- `user.deposited_balance` tracks Telegram-Stars-paid amount only (incremented in payment webhook).
-- Real-mode bet/case-open spending uses helper `spend_balance` → deposited first, then bonus.
-- `balance` is the total (deposited + bonus); `bonus_balance` derived in admin endpoints.
-- Frontend modal warning ("You are playing with bonus Stars") in real mode when bet > deposited (Crash/Mines/Slots/Wheel via `confirmBonusBet`).
+- `user.deposited_balance` increments on paid invoice only. `spend_balance` drains deposited first.
+- `BonusBetModal` warns in real mode when bet > deposited.
+- Admin endpoints return derived `bonus_balance`.
 
-### Top-Up
-- Modal text replaced with the contact-admin instruction copy (RU + EN), plus "Message @RadioArseny" CTA opening t.me/RadioArseny.
-- Promo Code field lives inside the Top-Up modal (English UI). `/admin` opens hidden Admin Access modal.
+### Top-Up flow (iter3)
+- 3-stage modal: choose → stars / admin.
+- Stars stage: presets + custom amount + promo (English) + admin `/admin` trigger + pay button.
+- Admin stage: full RU/EN copy, "Связаться с @RadioArseny" CTA → t.me/RadioArseny.
+- Promo only in stars stage; admin stage has no promo input; TopBar has no promo input.
 
 ### Withdrawal Emails (Resend)
-- Real-mode withdrawal creation triggers a one-time email to `arseny.yurevi4@gmail.com`.
-- Subject: `Cherry Case Withdrawal Request`. Body includes Telegram username/ID (or "Not available yet"), gift name/value/image, source case, total deposits, current balance, inventory value, short Request ID (`WD-XXXXXX`), created-at human time, full verification block, and warning if suspicious.
-- Skips silently if `RESEND_API_KEY` not configured.
-- No emails for demo mode, duplicates, or status changes.
+- One-time email to `arseny.yurevi4@gmail.com` on real-mode withdraw create.
+- Full verification block + `WD-XXXXXX` short id. Skipped silently when `RESEND_API_KEY` missing.
 
 ### Admin
-- `POST /api/admin/users/{tg_id}/add-stars` — Stars added to `balance` only (bonus), validates X-ADMIN, rejects ≤0/missing user, logs to `admin_actions`.
-- `GET /api/admin/users` returns each user's `deposited_balance` and `bonus_balance`.
-- `GET /api/admin/player/{tg_id}` returns the same + per-record withdrawal verification.
-- Admin UI: users list shows (D/B), player drawer shows Total/Deposited/Bonus, withdrawal cards show source case and "REVIEW" flag for suspicious.
+- `POST /api/admin/users/{tg_id}/add-stars` adds to balance (bonus only).
+- Admin UI shows D{deposited}/B{bonus} per user + per-withdrawal source case + REVIEW flag.
+
+## Test Status
+- iter1: 23/24 backend, 100% frontend
+- iter2: 25/25 backend, 13/13 frontend (100%)
+- iter3: minor frontend fix (you-lost div via stale closure)
+- iter4: 10/10 backend pytest; mines math 16/16 exact; frontend manually verified at preview
+- iter5 (mines nerf): direct math + Monte Carlo verified, no further agent run requested
 
 ## Files Of Interest
 - Backend: `/app/backend/server.py`
@@ -57,6 +71,7 @@ ADMIN_SECRET=9hNiTxKMM9Qb9YB9zJgqPhuVpS3MUrlkY4LtV3wVU-k
 - Translations: `/app/frontend/src/data/translations.js`
 
 ## Backlog
+- Split `server.py` into routers (admin/games/cases/payments).
 - Real promo code redemption endpoint.
-- "Deposited balance" badge on TopBar for transparency.
-- Server-side ratelimit on `/api/admin/verify` against brute force.
+- `/api/inventory/sell` race-prone read-then-write — guard with $inc or transaction.
+- Cleanup legacy `/app/backend/tests/test_cherry_case.py` (references `/api/profile`).

@@ -9,7 +9,9 @@ import TopUpModal from "@/components/TopUpModal";
 import BonusBetModal from "@/components/BonusBetModal";
 import CasesPage from "@/pages/Cases";
 import CrashPage from "@/pages/Crash";
-import MinesPage from "@/pages/Mines";
+// Mines temporarily disabled — UI route shows a Coming Soon screen.
+// Mines.jsx and backend Mines code are preserved and will be re-enabled later.
+import MinesComingSoon from "@/pages/MinesComingSoon";
 import SlotsPage from "@/pages/Slots";
 import WheelPage from "@/pages/Wheel";
 import InventoryPage from "@/pages/Inventory";
@@ -38,7 +40,7 @@ function Shell() {
           <Route path="/" element={<CasesPage />} />
           <Route path="/games" element={<GamesPage />} />
           <Route path="/crash" element={<CrashPage />} />
-          <Route path="/mines" element={<MinesPage />} />
+          <Route path="/mines" element={<MinesComingSoon />} />
           <Route path="/slots" element={<SlotsPage />} />
           <Route path="/wheel" element={<WheelPage />} />
           <Route path="/inventory" element={<InventoryPage />} />

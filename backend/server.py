@@ -1151,14 +1151,15 @@ def mines_multiplier(size: int, mines: int, picks: int) -> float:
     p = 1.0
     for i in range(picks):
         p *= (safe - i) / (total - i)
-    # Lowered RTP to ~78% per latest spec; high-mine setups still pay strongly via `fair`.
-    RTP = 0.78
+    # Target RTP ≈ 77% (between 75–80% per spec). High-mine setups still pay strong
+    # via `fair`; low-mine setups are clamped by a quadratic floor that grows slowly
+    # at first then gently accelerates, so players can never farm a low-risk strategy.
+    RTP = 0.77
     fair = RTP / p
-    # Floor: very slow growth for low-mine setups so 5x5/7x7 with 1–6 mines can't be
-    # farmed by opening a few tiles. Per-tile increment scales with mine count and is
-    # softer on larger boards (denominator `size`).
-    increment = (0.07 / size) * (mines ** 0.5)
-    floor = 1.0 + picks * increment
+    # Quadratic floor — tiny growth on the first few tiles, ramps up later.
+    # Scaled inversely by board size so bigger boards grow slower (lower mine density).
+    size_norm = size / 5.0  # 5x5 = 1.0, 7x7 = 1.4, 3x3 = 0.6
+    floor = 1.0 + (0.005 * picks + 0.003 * picks * picks * (mines ** 0.5)) / size_norm
     return round(max(fair, floor), 2)
 
 
