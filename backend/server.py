@@ -1057,24 +1057,24 @@ async def slots_spin(req: SlotsReq, x_tg_id: Optional[str] = Header(None, alias=
     await spend_balance(user["tg_id"], req.mode, req.bet)
 
     r = random.random() * 100
-    # New RTP spec:
-    # Lose 65% / 0.5x 14% / 1x 10% / 2x 7% / 5x 3% / 20x 0.9999% / 100x 0.0001%
-    if r < 65:
+    # Slots RTP ≈ 90%:
+    # Lose 55% / 0.5x 18% / 1x 12% / 2x 9% / 5x 4.5% / 20x 1.49% / 100x 0.01%
+    if r < 55:
         outcome = "nothing"; mult_f = 0
         a, b, c = random.sample(SLOT_SYMBOLS, 3)
-    elif r < 79:
+    elif r < 73:
         outcome = "small"; mult_f = 0.5
         a = b = random.choice(SLOT_SYMBOLS); c = random.choice([s for s in SLOT_SYMBOLS if s != a])
-    elif r < 89:
+    elif r < 85:
         outcome = "refund"; mult_f = 1
         sym = random.choice(SLOT_SYMBOLS); a = b = c = sym
-    elif r < 96:
+    elif r < 94:
         outcome = "medium"; mult_f = 2
         sym = random.choice(SLOT_SYMBOLS); a = b = c = sym
-    elif r < 99:
+    elif r < 98.5:
         outcome = "big"; mult_f = 5
         sym = random.choice(SLOT_SYMBOLS); a = b = c = sym
-    elif r < 99.9999:
+    elif r < 99.99:
         outcome = "huge"; mult_f = 20
         a = b = c = "seven"
     else:
@@ -1099,13 +1099,13 @@ async def slots_spin(req: SlotsReq, x_tg_id: Optional[str] = Header(None, alias=
 
 # ---------------- WHEEL ----------------
 WHEEL_SEGMENTS = [
-    {"label": "0x",   "mult": 0,    "chance": 95.0},
-    {"label": "1.5x", "mult": 1.5,  "chance": 3.0},
-    {"label": "2x",   "mult": 2,    "chance": 1.5},
-    {"label": "3x",   "mult": 3,    "chance": 0.4},
-    {"label": "5x",   "mult": 5,    "chance": 0.09},
-    {"label": "10x",  "mult": 10,   "chance": 0.0099},
-    {"label": "25x",  "mult": 25,   "chance": 0.0001},
+    {"label": "0x",   "mult": 0,    "chance": 75.0},
+    {"label": "1.5x", "mult": 1.5,  "chance": 15.0},
+    {"label": "2x",   "mult": 2,    "chance": 6.0},
+    {"label": "3x",   "mult": 3,    "chance": 2.5},
+    {"label": "5x",   "mult": 5,    "chance": 1.0},
+    {"label": "10x",  "mult": 10,   "chance": 0.45},
+    {"label": "25x",  "mult": 25,   "chance": 0.05},
 ]
 
 
