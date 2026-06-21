@@ -30,6 +30,9 @@ export default function CrashPage() {
   // Atomic flags (refs so we can read instantly inside the rAF loop / async cashout)
   const cashedOutRef = useRef(false);
   const betPlacedRef = useRef(false);
+  // Live multiplier ref — updated every rAF tick so cashout() always reads the
+  // freshest value (React state can lag a frame behind the screen).
+  const multRef = useRef(1.0);
   // Identity of the round currently in flight — prevents any leakage between rounds.
   const currentRoundRef = useRef({ id: null, crashAt: null });
 
@@ -68,6 +71,7 @@ export default function CrashPage() {
       // Full reset — current round is over, next round NOT yet generated.
       setCountdown(3);
       setMult(1.0);
+      multRef.current = 1.0;
       setCrashAt(null);
       setGameId(null);
       setPathD("M 0 100");
@@ -117,6 +121,7 @@ export default function CrashPage() {
       }
       const e = (performance.now() - startRef.current) / 1000;
       const m = +(Math.pow(1.06, e * 2)).toFixed(2);
+      multRef.current = m;
       setMult(m);
       const xR = Math.min(0.98, e / 10);
       const yR = Math.min(0.85, Math.log2(Math.max(1, m)) * 0.45);
@@ -124,6 +129,7 @@ export default function CrashPage() {
       if (m >= crashTarget) {
         // 2) Round crash — snapshot crashTarget into the locked display state.
         setMult(crashTarget);
+        multRef.current = crashTarget;
         setRoundCrashedAt(crashTarget);
         setPhase(PHASE_CRASH);
         // Mark loss if a bet was placed and user never cashed out (use refs to avoid stale closures)
@@ -165,20 +171,24 @@ export default function CrashPage() {
     // Strict round-isolation guards
     if (cashedOutRef.current) return;
     if (phase !== PHASE_FLY || !betPlacedRef.current || !gameId) return;
-    // Only allow cashout against the CURRENT round (compare locked crashAt to live mult)
     const round = currentRoundRef.current;
     if (!round || round.crashAt == null) return;
-    const mNow = mult;
-    if (mNow >= round.crashAt) return; // crash already happened — reject
+    // Use the LIVE multiplier from the ref (state can lag a frame). If somehow
+    // it already hit crashAt, clamp to just below so the server still accepts
+    // the cashout that the player actually saw on screen.
+    let mNow = multRef.current;
+    if (!Number.isFinite(mNow) || mNow < 1.01) mNow = 1.01;
+    if (mNow >= round.crashAt) mNow = Math.max(1.01, +(round.crashAt - 0.01).toFixed(2));
     const optimisticWin = Math.floor(bet * mNow);
     cashedOutRef.current = true;
     setBetPlaced(false);
     betPlacedRef.current = false;
+    // Optimistic UI — we trust we got in before crash; if server disagrees we revert.
     setCashoutResult({ mult: mNow, win: optimisticWin });
     try {
       const r = await api.post("/games/crash/cashout", { game_id: gameId, multiplier: mNow });
       if (r.data?.lost) {
-        // Server says crash already happened before our request landed.
+        // Server confirms the crash beat us — revert optimistic credit.
         setCashoutResult(null);
         cashedOutRef.current = false;
         toast.error(`${t("roundCrashedAt")} ${(round.crashAt).toFixed(2)}x`);
