@@ -189,9 +189,9 @@ export default function CrashPage() {
       const r = await api.post("/games/crash/cashout", { game_id: gameId, multiplier: mNow });
       if (r.data?.lost) {
         // Server confirms the crash beat us — revert optimistic credit.
+        // (Crash result is already shown on the main canvas — no toast needed.)
         setCashoutResult(null);
         cashedOutRef.current = false;
-        toast.error(`${t("roundCrashedAt")} ${(round.crashAt).toFixed(2)}x`);
       } else {
         if (r.data?.user) setUser(r.data.user);
         setCashoutResult({ mult: mNow, win: r.data.win ?? optimisticWin });
