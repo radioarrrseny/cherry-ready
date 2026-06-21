@@ -33,6 +33,10 @@ export default function CrashPage() {
   // Live multiplier ref — updated every rAF tick so cashout() always reads the
   // freshest value (React state can lag a frame behind the screen).
   const multRef = useRef(1.0);
+  // crashAt ref — placeBet writes here SYNCHRONOUSLY so startRound never falls
+  // back to a visual sample when a real bet's crash_at has been received
+  // (avoids stale-closure desync between visual round and server's crash_at).
+  const crashAtRef = useRef(null);
   // Identity of the round currently in flight — prevents any leakage between rounds.
   const currentRoundRef = useRef({ id: null, crashAt: null });
 
@@ -73,6 +77,7 @@ export default function CrashPage() {
       setMult(1.0);
       multRef.current = 1.0;
       setCrashAt(null);
+      crashAtRef.current = null;
       setGameId(null);
       setPathD("M 0 100");
       setCashoutResult(null);
@@ -92,9 +97,11 @@ export default function CrashPage() {
 
   const startRound = async () => {
     // 1) Establish THIS round's crash multiplier — never reuse a leaked value.
-    //    If the user has a placed bet, `crashAt` is already set from backend `/games/crash/start`.
+    //    If the user has a placed bet, `crashAtRef.current` is set from backend
+    //    `/games/crash/start`. We prefer the ref over `crashAt` state to avoid
+    //    a stale closure (setInterval-captured render where the state was still null).
     //    Otherwise we sample a visual-only value mirroring the backend distribution.
-    let crashTarget = crashAt;
+    let crashTarget = crashAtRef.current ?? crashAt;
     if (!crashTarget) {
       const last = history[0]?.at;
       let attempts = 0;
@@ -106,6 +113,7 @@ export default function CrashPage() {
         crashTarget = +Math.max(1.01, crashTarget + 0.01).toFixed(2);
       }
       setCrashAt(crashTarget);
+      crashAtRef.current = crashTarget;
     }
     // Lock the round identity. From this point on, no external state change can
     // overwrite the crash value used by THIS round's display / payout logic.
@@ -119,6 +127,8 @@ export default function CrashPage() {
       if (currentRoundRef.current.id !== roundId) {
         cancelAnimationFrame(rafRef.current); return;
       }
+      // Live target — placeBet may update it mid-flight; ensures visual & server stay in sync.
+      const liveTarget = currentRoundRef.current.crashAt || crashTarget;
       const e = (performance.now() - startRef.current) / 1000;
       const m = +(Math.pow(1.06, e * 2)).toFixed(2);
       multRef.current = m;
@@ -126,21 +136,21 @@ export default function CrashPage() {
       const xR = Math.min(0.98, e / 10);
       const yR = Math.min(0.85, Math.log2(Math.max(1, m)) * 0.45);
       setPathD(`M 0 100 Q ${xR * 50} ${100 - yR * 30} ${xR * 100} ${100 - yR * 100}`);
-      if (m >= crashTarget) {
-        // 2) Round crash — snapshot crashTarget into the locked display state.
-        setMult(crashTarget);
-        multRef.current = crashTarget;
-        setRoundCrashedAt(crashTarget);
+      if (m >= liveTarget) {
+        // 2) Round crash — snapshot the actual server target into the locked display state.
+        setMult(liveTarget);
+        multRef.current = liveTarget;
+        setRoundCrashedAt(liveTarget);
         setPhase(PHASE_CRASH);
         // Mark loss if a bet was placed and user never cashed out (use refs to avoid stale closures)
         if (betPlacedRef.current && !cashedOutRef.current) setLostThisRound(true);
         // 3) Append to history ONLY now — completed rounds only.
         setHistory((h) => {
-          if (h.length > 0 && h[0].at === crashTarget) {
-            const adjusted = +Math.max(1.01, crashTarget + 0.01).toFixed(2);
+          if (h.length > 0 && h[0].at === liveTarget) {
+            const adjusted = +Math.max(1.01, liveTarget + 0.01).toFixed(2);
             return [{ at: adjusted }, ...h].slice(0, 6);
           }
-          return [{ at: crashTarget }, ...h].slice(0, 6);
+          return [{ at: liveTarget }, ...h].slice(0, 6);
         });
         setBetPlaced(false);
         betPlacedRef.current = false;
@@ -160,7 +170,15 @@ export default function CrashPage() {
         const r = await api.post("/games/crash/start", { bet, mode });
         if (r.data.user) setUser(r.data.user);
         setGameId(r.data.game_id);
+        // Write crashAt to BOTH state and ref (ref bypasses stale closure in startRound)
+        crashAtRef.current = r.data.crash_at;
         setCrashAt(r.data.crash_at);
+        // If the round is already flying (placeBet response arrived after startRound
+        // launched the visual loop), keep the current round's crashAt in sync so
+        // cashout validates against the server's truth.
+        if (currentRoundRef.current.id) {
+          currentRoundRef.current.crashAt = r.data.crash_at;
+        }
         setBetPlaced(true);
         betPlacedRef.current = true;
       } catch (e) { toast.error(e?.response?.data?.detail || t("failed")); }
